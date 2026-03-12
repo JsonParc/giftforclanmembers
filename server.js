@@ -7,7 +7,7 @@ const Database = require('better-sqlite3');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
-const ENABLE_AI_TRAINING = false;
+const ENABLE_AI_TRAINING = true;
 const BENCHMARK_MODE = process.env.MW_BENCHMARK === '1';
 const RL_WEIGHT_UPDATES_ENABLED = process.env.MW_ALLOW_RL_WEIGHT_UPDATES === '1';
 const RL_PRELOAD_ON_START = process.env.MW_PRELOAD_RL_ON_START !== '0';
@@ -18,8 +18,8 @@ const io = socketIo(server);
 const aiTraining = ENABLE_AI_TRAINING ? require('./ai-training') : null;
 const RL_SESSION_DIFFICULTIES = Object.freeze(['hard', 'expert']);
 const DEFAULT_AI_DIFFICULTY = 'normal';
-const ALLOW_AI_DIFFICULTY_SELECTION = false;
-const ALLOW_RL_WEIGHT_LOADING = false;
+const ALLOW_AI_DIFFICULTY_SELECTION = true;
+const ALLOW_RL_WEIGHT_LOADING = true;
 const EMPTY_TRAINING_STATS = Object.freeze({
   episodes: 0,
   states: 0,

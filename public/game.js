@@ -6794,9 +6794,9 @@ if (loginPanel) {
 
 // Auth
 // AI Difficulty description
-const ENABLE_AI_TRAINING_UI = false;
+const ENABLE_AI_TRAINING_UI = true;
 const DEFAULT_AI_DIFFICULTY = 'normal';
-const AI_DIFFICULTY_SELECTION_ENABLED = false;
+const AI_DIFFICULTY_SELECTION_ENABLED = true;
 const diffDescs = {
     easy: '약화된 규칙 기반 AI. 느린 판단, 적은 건물/유닛',
     normal: '규칙 기반 AI, 기본 난이도',
