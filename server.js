@@ -2218,8 +2218,8 @@ function buildClientUnitsPayload(filterFn = null) {
     // Type-specific properties
     const t = unit.type;
     if (t === 'battleship') {
-      if (unit.aimedShot) u.aimedShot = true;
-      if (unit.aimedShotCooldownUntil) u.aimedShotCooldownUntil = unit.aimedShotCooldownUntil;
+      u.aimedShot = !!unit.aimedShot;
+      u.aimedShotCooldownUntil = Number.isFinite(unit.aimedShotCooldownUntil) ? unit.aimedShotCooldownUntil : 0;
       u.combatStanceActive = !!unit.combatStanceActive;
       if (unit.combatStanceActive) u.combatStanceStacks = unit.combatStanceStacks ?? 0;
       u.battleshipAegisMode = !!unit.battleshipAegisMode;

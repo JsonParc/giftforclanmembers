@@ -7755,6 +7755,13 @@ function connectToGame() {
             const shipY = (shooter && shooter.interpDisplayY !== undefined)
                 ? shooter.interpDisplayY
                 : ((shooter && shooter.y !== undefined) ? shooter.y : data.fromY);
+            if (shooter && data.aimedShot && !shooter.battleshipAegisMode) {
+                shooter.aimedShot = false;
+                shooter.aimedShotCooldownUntil = startTime + 16000;
+                if (gameState.selection.has(shooter.id) || gameState.inspectedUnitId === shooter.id) {
+                    updateSelectionInfo();
+                }
+            }
 
             const turretCenters = getBattleshipTurretWorldStates(shipX, shipY, shipAngle, 60, null, shooter);
 
