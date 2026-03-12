@@ -56,6 +56,8 @@ function setAssaultShipLoadMode(mode) {
 let attackProjectiles = []; // Active naval attack projectiles for world rendering
 let slbmContrails = []; // SLBM vapor trails
 let explosionEffects = []; // Ship death explosion/debris effects
+let yamatoExhaustParticles = []; // Exhaust smoke for Yamato battleships while moving
+const yamatoExhaustState = new Map();
 let animationFrameId = null;
 let fogIntervalId = null;
 let minimapIntervalId = null;
@@ -351,7 +353,7 @@ function loadBattleshipImages() {
         ymtBattleshipBaseImage = new Image();
         ymtBattleshipBaseImage.onload = () => {
             ymtBattleshipBaseLoaded = true;
-            console.log('JsonParc battleship base image loaded');
+            console.log('Yamato battleship base image loaded');
         };
         ymtBattleshipBaseImage.onerror = () => {
             console.warn('Failed to load ymtbattleshipbase.png');
@@ -387,7 +389,7 @@ function loadBattleshipImages() {
         ymtMainCannonImage = new Image();
         ymtMainCannonImage.onload = () => {
             ymtMainCannonLoaded = true;
-            console.log('JsonParc main cannon image loaded');
+            console.log('Yamato main cannon image loaded');
         };
         ymtMainCannonImage.onerror = () => {
             console.warn('Failed to load ymtmaincannon.png');
@@ -754,8 +756,20 @@ const BATTLESHIP_TURRET_IMAGE_COORDS = Object.freeze([
     { x: 0.5, y: 60 },
     { x: 0.5, y: 70 }
 ]);
+const YAMATO_ENTITY_NAME = 'yamato';
+const YAMATO_BATTLESHIP_EXHAUST_IMAGE_COORD = Object.freeze({ x: 9, y: 33 });
 const BATTLESHIP_DEFAULT_ATTACK_COOLDOWN_MS = 4800;
 const BATTLESHIP_MUZZLE_DIRECTION_SIGN = 1;
+const YAMATO_BATTLESHIP_EXHAUST_SAMPLE_MS = 55;
+const YAMATO_BATTLESHIP_EXHAUST_LIFETIME_MS = 1450;
+const YAMATO_BATTLESHIP_EXHAUST_MIN_MOVE_SQ = 0.12;
+const YAMATO_BATTLESHIP_EXHAUST_VIEWPORT_MARGIN = 140;
+const YAMATO_BATTLESHIP_EXHAUST_COLORS = Object.freeze([
+    0x101010,
+    0x242424,
+    0x3c3c3c,
+    0x5a5a5a
+]);
 
 function getBattleshipTargetHoldMs(unit) {
     const cooldown = (unit && Number.isFinite(unit.attackCooldownMs) && unit.attackCooldownMs > 0)
@@ -765,7 +779,7 @@ function getBattleshipTargetHoldMs(unit) {
     return Math.min(7000, Math.max(1200, cooldown + 600));
 }
 
-function isJsonParcBattleshipOwner(userId) {
+function isYamatoBattleshipOwner(userId) {
     if (userId == null) return false;
     if (userId === gameState.userId) {
         return gameState.username === 'JsonParc';
@@ -774,9 +788,13 @@ function isJsonParcBattleshipOwner(userId) {
     return !!(player && player.username === 'JsonParc');
 }
 
+function isYamatoBattleshipUnit(unit) {
+    return !!(unit && unit.type === 'battleship' && isYamatoBattleshipOwner(unit.userId));
+}
+
 function getBattleshipBodyImage(unitOrType = null) {
     const unit = typeof unitOrType === 'object' ? unitOrType : null;
-    if (unit && isJsonParcBattleshipOwner(unit.userId) && ymtBattleshipBaseLoaded && ymtBattleshipBaseImage) {
+    if (unit && isYamatoBattleshipUnit(unit) && ymtBattleshipBaseLoaded && ymtBattleshipBaseImage) {
         return ymtBattleshipBaseImage;
     }
     if (unit?.battleshipAegisMode && battleshipAegisBaseLoaded && battleshipAegisBaseImage) {
@@ -787,7 +805,7 @@ function getBattleshipBodyImage(unitOrType = null) {
 
 function getBattleshipCannonImage(unitOrType = null) {
     const unit = typeof unitOrType === 'object' ? unitOrType : null;
-    if (unit && isJsonParcBattleshipOwner(unit.userId) && ymtMainCannonLoaded && ymtMainCannonImage) {
+    if (unit && isYamatoBattleshipUnit(unit) && ymtMainCannonLoaded && ymtMainCannonImage) {
         return ymtMainCannonImage;
     }
     return (mainCannonLoaded && mainCannonImage) ? mainCannonImage : null;
@@ -861,6 +879,192 @@ function getBattleshipTurretWorldStates(shipX, shipY, shipAngle, size = 60, turr
         const muzzleX = centerX + Math.cos(angle) * metrics.muzzleForwardOffset * BATTLESHIP_MUZZLE_DIRECTION_SIGN;
         const muzzleY = centerY + Math.sin(angle) * metrics.muzzleForwardOffset * BATTLESHIP_MUZZLE_DIRECTION_SIGN;
         return { centerX, centerY, muzzleX, muzzleY, angle };
+    });
+}
+
+function getBattleshipImageWorldPoint(shipX, shipY, shipAngle, imagePoint, size = 60, unitOrType = null) {
+    const metrics = getBattleshipVisualMetrics(size, unitOrType);
+    const shipRotAngle = shipAngle - Math.PI / 2;
+    const cosShip = Math.cos(shipRotAngle);
+    const sinShip = Math.sin(shipRotAngle);
+    const localX = (imagePoint.x - metrics.originalWidth / 2) * metrics.imageScaleX;
+    const localY = (imagePoint.y - metrics.originalHeight / 2) * metrics.imageScaleY;
+
+    return {
+        x: shipX + localX * cosShip - localY * sinShip,
+        y: shipY + localX * sinShip + localY * cosShip,
+        metrics
+    };
+}
+
+function spawnYamatoExhaustParticle(emitterX, emitterY, moveDx, moveDy, metrics, now) {
+    const moveLength = Math.hypot(moveDx, moveDy);
+    if (moveLength <= 0) return;
+
+    const moveNormX = moveDx / moveLength;
+    const moveNormY = moveDy / moveLength;
+    const speedFactor = Math.min(1.85, Math.max(0.9, moveLength / Math.max(0.001, metrics.imageScaleY * 0.45)));
+    const lateralX = -moveNormY;
+    const lateralY = moveNormX;
+    const lateralJitter = metrics.imageScaleX * (Math.random() - 0.5) * (2 + speedFactor * 0.9);
+    const backwardOffset = metrics.imageScaleY * (0.55 + Math.random() * (0.95 + speedFactor * 0.3));
+    const startX = emitterX + lateralX * lateralJitter - moveNormX * backwardOffset;
+    const startY = emitterY + lateralY * lateralJitter - moveNormY * backwardOffset;
+    const colorIndex = Math.floor(Math.random() * YAMATO_BATTLESHIP_EXHAUST_COLORS.length);
+    const coreColor = YAMATO_BATTLESHIP_EXHAUST_COLORS[colorIndex];
+    const hazeColor = YAMATO_BATTLESHIP_EXHAUST_COLORS[Math.min(
+        YAMATO_BATTLESHIP_EXHAUST_COLORS.length - 1,
+        colorIndex + 1
+    )];
+
+    yamatoExhaustParticles.push({
+        x: startX,
+        y: startY,
+        time: now,
+        driftX: -moveNormX * metrics.imageScaleY * (0.016 + Math.random() * 0.009) * speedFactor + lateralX * metrics.imageScaleX * ((Math.random() - 0.5) * 0.014),
+        driftY: -moveNormY * metrics.imageScaleY * (0.016 + Math.random() * 0.009) * speedFactor + lateralY * metrics.imageScaleX * ((Math.random() - 0.5) * 0.014),
+        swirlX: lateralX * metrics.imageScaleX * ((Math.random() - 0.5) * (1.35 + speedFactor * 0.35)),
+        swirlY: lateralY * metrics.imageScaleX * ((Math.random() - 0.5) * (1.35 + speedFactor * 0.35)),
+        startRadius: metrics.imageScaleY * (1.15 + Math.random() * 0.65),
+        endRadius: metrics.imageScaleY * (4.2 + Math.random() * 1.9) * speedFactor,
+        alpha: Math.min(0.36, 0.21 + Math.random() * 0.1 + (speedFactor - 0.9) * 0.045),
+        denseAlpha: Math.min(0.42, 0.12 + Math.random() * 0.08 + (speedFactor - 0.9) * 0.035),
+        stretch: 0.8 + Math.random() * 0.8 + speedFactor * 0.45,
+        speedFactor,
+        coreColor,
+        hazeColor
+    });
+}
+
+function syncYamatoExhaust(now, viewport, loadSettings) {
+    const activeIds = new Set();
+    const viewportMargin = YAMATO_BATTLESHIP_EXHAUST_VIEWPORT_MARGIN;
+    const emissionInterval = loadSettings.detailedProjectiles
+        ? YAMATO_BATTLESHIP_EXHAUST_SAMPLE_MS
+        : YAMATO_BATTLESHIP_EXHAUST_SAMPLE_MS + 40;
+
+    gameState.units.forEach((unit, unitId) => {
+        if (!isYamatoBattleshipUnit(unit)) return;
+
+        const { x: shipX, y: shipY } = getUnitDisplayPosition(unit);
+        const state = yamatoExhaustState.get(unitId) || {
+            lastShipX: shipX,
+            lastShipY: shipY,
+            lastEmitTime: now - emissionInterval
+        };
+        const moveDx = shipX - state.lastShipX;
+        const moveDy = shipY - state.lastShipY;
+        const moveDistSq = moveDx * moveDx + moveDy * moveDy;
+        const shipVisible = isUnitVisibleToPlayer(unit);
+        const inViewport = (
+            shipX >= viewport.left - viewportMargin &&
+            shipX <= viewport.right + viewportMargin &&
+            shipY >= viewport.top - viewportMargin &&
+            shipY <= viewport.bottom + viewportMargin
+        );
+
+        if (shipVisible && inViewport) {
+            activeIds.add(unitId);
+            if (moveDistSq > YAMATO_BATTLESHIP_EXHAUST_MIN_MOVE_SQ && now - state.lastEmitTime >= emissionInterval) {
+                const shipAngle = unit.displayAngle !== undefined
+                    ? unit.displayAngle
+                    : (unit.commandAngle !== undefined ? unit.commandAngle : 0);
+                const size = getUnitSelectionBaseSize(unit);
+                const exhaustPoint = getBattleshipImageWorldPoint(
+                    shipX,
+                    shipY,
+                    shipAngle,
+                    YAMATO_BATTLESHIP_EXHAUST_IMAGE_COORD,
+                    size,
+                    unit
+                );
+                const moveLength = Math.sqrt(moveDistSq);
+                const speedFactor = Math.min(
+                    1.8,
+                    Math.max(0.85, moveLength / Math.max(0.001, exhaustPoint.metrics.imageScaleY * 0.45))
+                );
+                const particleCount = loadSettings.detailedProjectiles
+                    ? Math.max(3, Math.min(5, Math.round(2 + speedFactor * 1.6)))
+                    : Math.max(2, Math.min(3, Math.round(1 + speedFactor)));
+                for (let i = 0; i < particleCount; i++) {
+                    spawnYamatoExhaustParticle(
+                        exhaustPoint.x,
+                        exhaustPoint.y,
+                        moveDx,
+                        moveDy,
+                        exhaustPoint.metrics,
+                        now - (particleCount - 1 - i) * 12
+                    );
+                }
+                state.lastEmitTime = now;
+            }
+        }
+
+        state.lastShipX = shipX;
+        state.lastShipY = shipY;
+        yamatoExhaustState.set(unitId, state);
+    });
+
+    yamatoExhaustParticles = yamatoExhaustParticles.filter(
+        particle => now - particle.time < YAMATO_BATTLESHIP_EXHAUST_LIFETIME_MS
+    );
+
+    const staleIds = [];
+    yamatoExhaustState.forEach((state, unitId) => {
+        if (!activeIds.has(unitId) && !gameState.units.has(unitId)) {
+            staleIds.push(unitId);
+        }
+    });
+    staleIds.forEach(unitId => yamatoExhaustState.delete(unitId));
+}
+
+function drawYamatoExhaust(gfx, now, viewport) {
+    const viewportMargin = YAMATO_BATTLESHIP_EXHAUST_VIEWPORT_MARGIN;
+
+    yamatoExhaustParticles.forEach(particle => {
+        const age = now - particle.time;
+        const progress = age / YAMATO_BATTLESHIP_EXHAUST_LIFETIME_MS;
+        if (progress <= 0 || progress >= 1) return;
+
+        const driftX = particle.driftX * age + particle.swirlX * progress;
+        const driftY = particle.driftY * age + particle.swirlY * progress;
+        const drawX = particle.x + driftX;
+        const drawY = particle.y + driftY;
+        if (
+            drawX < viewport.left - viewportMargin ||
+            drawX > viewport.right + viewportMargin ||
+            drawY < viewport.top - viewportMargin ||
+            drawY > viewport.bottom + viewportMargin
+        ) {
+            return;
+        }
+
+        const radius = particle.startRadius + (particle.endRadius - particle.startRadius) * progress;
+        const alpha = particle.alpha * (1 - progress * 0.78);
+        const hazeAlpha = alpha * 0.72;
+        const denseAlpha = particle.denseAlpha * (1 - progress * 0.92);
+        const stretchX = particle.swirlX * 0.08 * particle.stretch;
+        const stretchY = particle.swirlY * 0.08 * particle.stretch;
+
+        gfx.beginFill(particle.hazeColor, hazeAlpha);
+        gfx.drawCircle(drawX, drawY, radius * 1.45);
+        gfx.endFill();
+
+        gfx.beginFill(particle.coreColor, alpha);
+        gfx.drawCircle(
+            drawX - stretchX * progress,
+            drawY - stretchY * progress,
+            radius * 1.12
+        );
+        gfx.endFill();
+
+        gfx.beginFill(0x050505, denseAlpha);
+        gfx.drawCircle(
+            drawX + stretchX * 0.35 * (1 - progress),
+            drawY + stretchY * 0.35 * (1 - progress),
+            Math.max(radius * 0.62, particle.startRadius * 0.9)
+        );
+        gfx.endFill();
     });
 }
 
@@ -1788,7 +1992,12 @@ function buildLandCellSnapshotFromMap(map) {
 }
 
 // Helper: get Korean name for unit type
-function getUnitTypeName(type) {
+function getUnitTypeName(typeOrUnit) {
+    const unit = (typeOrUnit && typeof typeOrUnit === 'object') ? typeOrUnit : null;
+    const type = unit ? unit.type : typeOrUnit;
+    if (unit && isYamatoBattleshipUnit(unit)) {
+        return YAMATO_ENTITY_NAME;
+    }
     const names = {
         'worker': '일꾼',
         'destroyer': '구축함',
@@ -1803,6 +2012,18 @@ function getUnitTypeName(type) {
         'frigate': '호위함'
     };
     return names[type] || type;
+}
+
+function getUnitSelectionGroupName(type, units = []) {
+    if (
+        type === 'battleship'
+        && Array.isArray(units)
+        && units.length > 0
+        && units.every(unit => isYamatoBattleshipUnit(unit))
+    ) {
+        return YAMATO_ENTITY_NAME;
+    }
+    return getUnitTypeName(type);
 }
 
 // Helper: get Korean name for building type
@@ -1908,7 +2129,7 @@ canvas.addEventListener('mousedown', (e) => {
                         if (Math.sqrt(dx * dx + dy * dy) < 50) {
                             targetId = unit.id;
                             targetType = 'unit';
-                            targetName = getUnitTypeName(unit.type);
+                            targetName = getUnitTypeName(unit);
                         }
                     }
                 });
@@ -2108,7 +2329,7 @@ canvas.addEventListener('mouseup', (e) => {
                             if (Math.sqrt(dx * dx + dy * dy) < 60) {
                                 targetId = unit.id;
                                 targetType = 'unit';
-                                targetName = getUnitTypeName(unit.type);
+                                targetName = getUnitTypeName(unit);
                             }
                         }
                     });
@@ -2976,7 +3197,7 @@ function renderSingleUnitPanel(unit, options = {}) {
         const stateSuffix = unit.type === 'missile_launcher'
             ? ` | ${getMissileLauncherStateLabel(unit)}`
             : (unit.type === 'assaultship' ? ` | 적재 ${getAssaultShipLoadedUnitCount(unit)}/${ASSAULT_SHIP_MAX_LAUNCHERS}` : '');
-        document.getElementById('targetLabel').textContent = `${getUnitTypeName(unit.type)}${factionSuffix}${stateSuffix}${holdSuffix}`;
+        document.getElementById('targetLabel').textContent = `${getUnitTypeName(unit)}${factionSuffix}${stateSuffix}${holdSuffix}`;
     }
 
     if (!allowSkills || unit.userId !== gameState.userId) return;
@@ -3789,7 +4010,7 @@ function updateSelectionInfo() {
         document.getElementById('statKills').textContent = totalKills;
         document.getElementById('targetLabel').textContent = attackTarget && holdCount === 0
             ? `🎯 ${attackTarget.name}`
-            : getUnitTypeName(primaryUnit.type) + ` 외 ${selectedUnits.length - 1}${holdSuffix}`;
+            : getUnitTypeName(primaryUnit) + ` 외 ${selectedUnits.length - 1}${holdSuffix}`;
         
         // Determine which unit type's skills to show
         const hasTypes = new Set(selectedUnits.map(u => u.type));
@@ -3829,14 +4050,17 @@ function updateSelectionInfo() {
             const isExpanded = window._expandedSquads.has(sqId);
             const sqTypes = new Set(sqUnits.map(u => u.type));
             const sqTypeSummary = [...sqTypes].sort((a, b) => getUnitSelectionPriority(b) - getUnitSelectionPriority(a))
-                .map(t => `${getUnitTypeName(t)} ${sqUnits.filter(u => u.type === t).length}`).join(', ');
+                .map(t => {
+                    const matchingUnits = sqUnits.filter(u => u.type === t);
+                    return `${getUnitSelectionGroupName(t, matchingUnits)} ${matchingUnits.length}`;
+                }).join(', ');
             html += `<div class="squad-header" data-squad-toggle="${sqId}" style="color:#00ddff;margin-top:4px;cursor:pointer;user-select:none;" title="${sqTypeSummary}">${isExpanded ? '▼' : '▶'} 부대 ${sqNum} (${sqUnits.length}유닛)</div>`;
             if (isExpanded) {
                 // Show unit types in this squad as hoverable items
                 [...sqTypes].sort((a, b) => getUnitSelectionPriority(b) - getUnitSelectionPriority(a)).forEach(t => {
                     const cnt = sqUnits.filter(u => u.type === t).length;
                     const isFocused = effectiveSkillType === t;
-                    html += `<div class="skill-hover-type" data-skill-type="${t}" style="padding-left:16px;cursor:pointer;${isFocused ? 'color:#00ffcc;font-weight:bold;' : ''}">${getUnitTypeName(t)}: ${cnt}</div>`;
+                    html += `<div class="skill-hover-type" data-skill-type="${t}" style="padding-left:16px;cursor:pointer;${isFocused ? 'color:#00ffcc;font-weight:bold;' : ''}">${getUnitSelectionGroupName(t, sqUnits.filter(u => u.type === t))}: ${cnt}</div>`;
                 });
             }
         });
@@ -3850,7 +4074,7 @@ function updateSelectionInfo() {
             [...ungroupedTypes].sort((a, b) => getUnitSelectionPriority(b) - getUnitSelectionPriority(a)).forEach(t => {
                 const cnt = ungroupedUnits.filter(u => u.type === t).length;
                 const isFocused = effectiveSkillType === t;
-                html += `<div class="skill-hover-type" data-skill-type="${t}" style="cursor:pointer;${isFocused ? 'color:#00ffcc;font-weight:bold;' : ''}">${getUnitTypeName(t)}: ${cnt}</div>`;
+                html += `<div class="skill-hover-type" data-skill-type="${t}" style="cursor:pointer;${isFocused ? 'color:#00ffcc;font-weight:bold;' : ''}">${getUnitSelectionGroupName(t, ungroupedUnits.filter(u => u.type === t))}: ${cnt}</div>`;
             });
         }
 
@@ -5005,13 +5229,17 @@ function syncAirstrikeSprites(now, viewport) {
     });
 }
 
-// Combined effects rendering: contrails + projectiles + explosions + unit overlays
+// Combined effects rendering: battleship exhaust + contrails + projectiles + explosions + unit overlays
 function syncEffectsLayer() {
     effectsGfx.clear();
     const now = Date.now();
     const viewport = getViewportBounds(500);
     const loadSettings = getClientLoadSettings();
     syncSlbmFlightSounds(now);
+
+    // Keep smoke underneath selection circles and HP bars.
+    syncYamatoExhaust(now, viewport, loadSettings);
+    drawYamatoExhaust(effectsGfx, now, viewport);
 
     // --- Unit overlays (HP bars, selection circles) ---
     drawUnitOverlays(effectsGfx);
@@ -5325,11 +5553,114 @@ function syncEffectsLayer() {
     syncAirstrikeSprites(now, viewport);
 }
 
+function isNavalUnitTypeForEffects(unitType) {
+    return unitType === 'destroyer'
+        || unitType === 'cruiser'
+        || unitType === 'battleship'
+        || unitType === 'carrier'
+        || unitType === 'assaultship'
+        || unitType === 'submarine'
+        || unitType === 'frigate';
+}
+
+function createGenericUnitDestroyedExplosionEffect(data, startTime) {
+    const debrisCount = data.type === 'battleship' ? 20 : (data.type === 'carrier' ? 18 : 12);
+    const explosion = {
+        x: data.x,
+        y: data.y,
+        startTime,
+        duration: 1500,
+        debris: []
+    };
+    for (let i = 0; i < debrisCount; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 40 + Math.random() * 120;
+        explosion.debris.push({
+            dx: Math.cos(angle) * speed,
+            dy: Math.sin(angle) * speed,
+            size: 2 + Math.random() * 5,
+            color: Math.random() > 0.5 ? '#ff6600' : (Math.random() > 0.5 ? '#ffaa00' : '#ff3300'),
+            rotation: Math.random() * Math.PI * 2
+        });
+    }
+    return explosion;
+}
+
+function createNavalSinkExplosionEffect(data, startTime) {
+    const isYamatoSink = data.type === 'battleship' && isYamatoBattleshipOwner(data.userId);
+    const isBattleship = data.type === 'battleship';
+    const isCarrier = data.type === 'carrier';
+    const debrisCount = isYamatoSink ? 40 : (isBattleship ? 28 : (isCarrier ? 24 : 18));
+    const splashCount = isYamatoSink ? 50 : (isBattleship ? 34 : (isCarrier ? 28 : 20));
+    const foamCount = isYamatoSink ? 16 : (isBattleship ? 12 : 8);
+    const explosion = {
+        x: data.x,
+        y: data.y,
+        startTime,
+        duration: isYamatoSink ? 2200 : (isBattleship ? 1850 : 1650),
+        maxRadius: isYamatoSink ? 86 : (isBattleship ? 68 : 54),
+        style: isYamatoSink ? 'yamato-sink' : 'naval-sink',
+        debris: [],
+        splash: [],
+        foam: []
+    };
+
+    for (let i = 0; i < debrisCount; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 45 + Math.random() * (isYamatoSink ? 180 : 130);
+        explosion.debris.push({
+            dx: Math.cos(angle) * speed,
+            dy: Math.sin(angle) * speed,
+            size: 2.5 + Math.random() * (isYamatoSink ? 6.5 : 5),
+            color: Math.random() > 0.62
+                ? '#f6fbff'
+                : (Math.random() > 0.45 ? '#c7d0d8' : (Math.random() > 0.5 ? '#ffb24a' : '#ff6a1a')),
+            rotation: Math.random() * Math.PI * 2
+        });
+    }
+
+    for (let i = 0; i < splashCount; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 40 + Math.random() * (isYamatoSink ? 150 : 110);
+        explosion.splash.push({
+            dx: Math.cos(angle) * speed,
+            dy: Math.sin(angle) * speed,
+            radius: 2.5 + Math.random() * (isYamatoSink ? 5.5 : 4),
+            alpha: 0.26 + Math.random() * (isYamatoSink ? 0.2 : 0.14),
+            color: Math.random() > 0.35 ? 0xffffff : (Math.random() > 0.5 ? 0xdbe3ea : 0xc3ccd4),
+            swell: 0.7 + Math.random() * 0.9
+        });
+    }
+
+    for (let i = 0; i < foamCount; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const spread = explosion.maxRadius * (0.16 + Math.random() * 0.44);
+        explosion.foam.push({
+            dx: Math.cos(angle) * spread,
+            dy: Math.sin(angle) * spread,
+            radius: 6 + Math.random() * (isYamatoSink ? 12 : 8),
+            alpha: 0.1 + Math.random() * (isYamatoSink ? 0.12 : 0.08),
+            color: Math.random() > 0.45 ? 0xf8fbff : 0xd2dae1
+        });
+    }
+
+    return explosion;
+}
+
+function createUnitDestroyedExplosionEffect(data, startTime = Date.now()) {
+    if (isNavalUnitTypeForEffects(data.type)) {
+        return createNavalSinkExplosionEffect(data, startTime);
+    }
+    return createGenericUnitDestroyedExplosionEffect(data, startTime);
+}
+
 function drawExplosionEffect(gfx, exp, now) {
     const elapsed = now - exp.startTime;
     if (elapsed < 0) return;
     const progress = elapsed / exp.duration;
     const isRedZoneExplosion = exp.style === 'red-zone';
+    const isNavalSink = exp.style === 'naval-sink' || exp.style === 'yamato-sink';
+    const isYamatoSink = exp.style === 'yamato-sink';
 
     // Search pulse: expanding cyan ring
     if (exp.isSearchPulse) {
@@ -5341,7 +5672,49 @@ function drawExplosionEffect(gfx, exp, now) {
         return;
     }
 
-    if (progress < 0.3) {
+    if (isNavalSink) {
+        if (progress < 0.36) {
+            const splashAlpha = (1 - progress / 0.36) * (isYamatoSink ? 0.9 : 0.72);
+            const splashRadius = (exp.maxRadius || 30) * (0.6 + progress * (isYamatoSink ? 1.4 : 1.15));
+            gfx.beginFill(0xf8fbff, splashAlpha);
+            gfx.drawCircle(exp.x, exp.y, splashRadius);
+            gfx.endFill();
+            gfx.beginFill(0xd8e0e8, splashAlpha * 0.52);
+            gfx.drawCircle(exp.x, exp.y, splashRadius * 0.52);
+            gfx.endFill();
+        }
+        if (progress > 0.03) {
+            const ringAlpha = Math.max(0, (isYamatoSink ? 0.62 : 0.46) - progress * (isYamatoSink ? 0.48 : 0.34));
+            const ringRadius = (exp.maxRadius || 30) * (0.58 + progress * (isYamatoSink ? 1.6 : 1.25));
+            gfx.lineStyle(isYamatoSink ? 10 : 7, 0xffffff, ringAlpha);
+            gfx.drawCircle(exp.x, exp.y, ringRadius);
+            gfx.lineStyle(isYamatoSink ? 6 : 4, 0xc6cfd8, ringAlpha * 0.8);
+            gfx.drawCircle(exp.x, exp.y, ringRadius * 0.74);
+            gfx.lineStyle(0);
+        }
+        if (exp.foam) {
+            exp.foam.forEach(foam => {
+                const foamProgress = Math.min(1, progress * 1.12);
+                const alpha = foam.alpha * Math.max(0, 1 - progress * 0.96);
+                const px = exp.x + foam.dx * foamProgress;
+                const py = exp.y + foam.dy * foamProgress;
+                gfx.beginFill(foam.color, alpha);
+                gfx.drawCircle(px, py, foam.radius * (0.7 + foamProgress * 1.2));
+                gfx.endFill();
+            });
+        }
+        if (exp.splash) {
+            exp.splash.forEach(splash => {
+                const sprayProgress = Math.min(1, progress * 1.06);
+                const alpha = splash.alpha * Math.max(0, 1 - progress * 0.9);
+                const px = exp.x + splash.dx * sprayProgress;
+                const py = exp.y + splash.dy * sprayProgress;
+                gfx.beginFill(splash.color, alpha);
+                gfx.drawCircle(px, py, splash.radius * (0.8 + sprayProgress * splash.swell));
+                gfx.endFill();
+            });
+        }
+    } else if (progress < 0.3) {
         const flashAlpha = 1 - (progress / 0.3);
         const flashRadius = (exp.maxRadius || 30) + progress * (isRedZoneExplosion ? 85 : 60);
         gfx.beginFill(isRedZoneExplosion ? 0xbfc3c7 : 0xffc832, flashAlpha * (isRedZoneExplosion ? 0.62 : 0.8));
@@ -5351,7 +5724,7 @@ function drawExplosionEffect(gfx, exp, now) {
         gfx.drawCircle(exp.x, exp.y, flashRadius * 0.4);
         gfx.endFill();
     }
-    if (progress > 0.1) {
+    if (!isNavalSink && progress > 0.1) {
         const ringAlpha = Math.max(0, 0.4 - progress * 0.4);
         const ringRadius = (isRedZoneExplosion ? 36 : 20) + progress * (isRedZoneExplosion ? 120 : 80);
         gfx.lineStyle(isRedZoneExplosion ? 8 : 6, isRedZoneExplosion ? 0x7b7f84 : 0x646464, ringAlpha);
@@ -5381,17 +5754,27 @@ function drawSimpleExplosionEffect(gfx, exp, now) {
     if (elapsed < 0) return;
     const progress = elapsed / exp.duration;
     const isRedZoneExplosion = exp.style === 'red-zone';
+    const isNavalSink = exp.style === 'naval-sink' || exp.style === 'yamato-sink';
+    const isYamatoSink = exp.style === 'yamato-sink';
     const baseRadius = exp.maxRadius || 30;
-    const radius = baseRadius * (0.7 + progress * 1.1);
-    const alpha = Math.max(0, (isRedZoneExplosion ? 0.42 : 0.55) - progress * (isRedZoneExplosion ? 0.42 : 0.55));
+    const radius = baseRadius * (isNavalSink ? (0.78 + progress * 1.28) : (0.7 + progress * 1.1));
+    const alpha = Math.max(
+        0,
+        (isNavalSink ? (isYamatoSink ? 0.62 : 0.48) : (isRedZoneExplosion ? 0.42 : 0.55))
+        - progress * (isNavalSink ? (isYamatoSink ? 0.58 : 0.44) : (isRedZoneExplosion ? 0.42 : 0.55))
+    );
 
-    gfx.beginFill(isRedZoneExplosion ? 0xbfc3c7 : 0xff8c28, alpha);
+    gfx.beginFill(isNavalSink ? 0xf3f8fc : (isRedZoneExplosion ? 0xbfc3c7 : 0xff8c28), alpha);
     gfx.drawCircle(exp.x, exp.y, radius);
     gfx.endFill();
 
     if (progress > 0.12) {
-        gfx.lineStyle(isRedZoneExplosion ? 6 : 4, isRedZoneExplosion ? 0x7b7f84 : 0x666666, Math.max(0, 0.22 - progress * 0.22));
-        gfx.drawCircle(exp.x, exp.y, radius * 1.2);
+        gfx.lineStyle(
+            isNavalSink ? (isYamatoSink ? 7 : 5) : (isRedZoneExplosion ? 6 : 4),
+            isNavalSink ? 0xffffff : (isRedZoneExplosion ? 0x7b7f84 : 0x666666),
+            Math.max(0, isNavalSink ? 0.28 - progress * 0.24 : 0.22 - progress * 0.22)
+        );
+        gfx.drawCircle(exp.x, exp.y, radius * (isNavalSink ? 1.34 : 1.2));
         gfx.lineStyle(0);
     }
 }
@@ -7568,29 +7951,10 @@ function connectToGame() {
         }
     });
 
-    // Ship death explosion effect
+    // Unit destruction effect
     socket.on('unitDestroyed', (data) => {
         if (!isPositionVisible(data.x, data.y)) return;
-        const debrisCount = data.type === 'battleship' ? 20 : (data.type === 'carrier' ? 18 : 12);
-        const explosion = {
-            x: data.x,
-            y: data.y,
-            startTime: Date.now(),
-            duration: 1500,
-            debris: []
-        };
-        for (let i = 0; i < debrisCount; i++) {
-            const angle = Math.random() * Math.PI * 2;
-            const speed = 40 + Math.random() * 120;
-            explosion.debris.push({
-                dx: Math.cos(angle) * speed,
-                dy: Math.sin(angle) * speed,
-                size: 2 + Math.random() * 5,
-                color: Math.random() > 0.5 ? '#ff6600' : (Math.random() > 0.5 ? '#ffaa00' : '#ff3300'),
-                rotation: Math.random() * Math.PI * 2
-            });
-        }
-        explosionEffects.push(explosion);
+        explosionEffects.push(createUnitDestroyedExplosionEffect(data, Date.now()));
     });
 
     // Building destruction explosion effect (grey debris)
