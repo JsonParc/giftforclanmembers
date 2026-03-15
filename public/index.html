@@ -130,6 +130,7 @@
                 <span id="score">0</span>
             </div>
             <button id="aiAddZone" type="button" style="display:none;padding:8px 12px;border-radius:8px;border:1px solid #6f93b7;background:#1c3854;color:#d6ebff;font-weight:700;cursor:pointer;flex-shrink:0;">AI +</button>
+            <button id="langToggle" title="언어 전환 (한/영)" aria-label="언어 전환" type="button">한/영</button>
             <button id="resetBtn" class="reset-btn" title="내 기지와 모든 데이터 초기화">내 기지 초기화</button>
             <button id="aiRemoveZone" type="button" style="display:none;padding:8px 12px;border-radius:8px;border:1px solid #b77a7a;background:#4a2323;color:#ffd9d9;font-weight:700;cursor:pointer;flex-shrink:0;">AI -</button>
             <button id="logoutBtn" class="logout-btn">로그아웃</button>
@@ -268,5 +269,30 @@
     <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.3.2/dist/pixi.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="game.js?v=pixelify_en_v1"></script>
+    <script>
+        (function(){
+            const btn = document.getElementById('langToggle');
+            if (!btn) return;
+            function setLang(lang){
+                try { document.documentElement.lang = lang; localStorage.setItem('mw_lang', lang); } catch(e){}
+                updateBtn();
+            }
+            function updateBtn(){
+                if (document.documentElement.lang === 'ko') {
+                    btn.textContent = '한/영';
+                    btn.title = '언어: 한국어 (클릭해 영어로 전환)';
+                } else {
+                    btn.textContent = 'EN/한';
+                    btn.title = 'Language: English (click to switch to Korean)';
+                }
+            }
+            btn.addEventListener('click', ()=>{
+                setLang(document.documentElement.lang === 'ko' ? 'en' : 'ko');
+            });
+            const saved = localStorage.getItem('mw_lang');
+            if (saved) setLang(saved);
+            else updateBtn();
+        })();
+    </script>
 </body>
 </html>

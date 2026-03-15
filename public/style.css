@@ -36,6 +36,37 @@
     font-display: swap;
 }
 
+/* ThinDungGeunMo: 얇은둥근모 - Korean display font for Korean text */
+@font-face {
+    font-family: 'ThinDungGeunMo';
+    src: url('/assets/fonts/ThinDungGeunMo.ttf') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
+/* When the document language is Korean, prefer the ThinDungGeunMo font for UI display */
+html[lang="ko"] {
+    --ui-font-display: 'ThinDungGeunMo', 'Pixelify Sans', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Small language toggle button (placed in the top HUD) */
+#langToggle {
+    position: absolute;
+    top: 8px;
+    right: 120px;
+    z-index: 300;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--ui-border);
+    color: var(--ui-accent);
+    font-size: 12px;
+    cursor: pointer;
+    backdrop-filter: blur(6px);
+}
+
+
 body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     overflow: hidden;
