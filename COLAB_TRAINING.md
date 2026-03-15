@@ -53,6 +53,7 @@ drive.mount('/content/drive')
   Deletes the local `ai-weights-<difficulty>.json(.gz)` files before training.
 - `--download-base`
   Downloads the external base weights if nothing is cached locally.
+  This is not the same as restoring a weights file from Git history.
 - `--output-dir PATH`
   Copies the final `.json.gz` and optional `.json` files to another directory.
 - `--save-json`
@@ -70,3 +71,19 @@ drive.mount('/content/drive')
   - `ai-weights-hard.json.gz`
   - `ai-weights-expert.json.gz`
 - If you interrupt the process with `Ctrl+C`, the runner saves the current weights before exiting.
+
+## Restore weights from Git history
+
+The notebook can restore `ai-weights-<difficulty>.json.gz` from Git history before training.
+
+- Set `GIT_WEIGHTS_REF = "auto"` to find the newest commit in the cloned repository history that still contains the weights file.
+- Set `GIT_WEIGHTS_REF` to a specific branch/tag/commit if you want an exact revision.
+- Leave `GIT_WEIGHTS_REF = ""` to skip Git restore.
+
+The notebook now defaults to no reset and asks before deleting weights, so the normal Colab flow is:
+
+1. Clone/pull the GitHub repo.
+2. Restore the latest weights from Git history.
+3. Optionally adjust the next run's episode count or runtime options in the notebook prompt cell.
+4. Continue training in Colab. If you run the training cell again without resetting, it continues from the current local weights.
+5. Download the result and commit/push the updated weights yourself if you want GitHub to become the new baseline.

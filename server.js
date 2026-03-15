@@ -10308,7 +10308,8 @@ function updateAI() {
       hasNavalAcademy,
       missileSiloCount,
       powerPlantCount,
-      shipyardCount
+      shipyardCount,
+      workerCount: aiWorkers.length
     });
     const selectBestUnitType = (candidateTypes, scoreFn) => {
       const scored = candidateTypes
@@ -10341,7 +10342,13 @@ function updateAI() {
           const snapshot = aiTraining.takeSnapshot(gameState, playerId);
           const prevSnapshot = player._prevRLSnapshot || snapshot;
           const reward = aiTraining.calculateReward(prevSnapshot, snapshot, player._prevRLAction);
-          activeSession.recordTransition(player._prevRLState, player._prevRLAction, reward, currentState);
+          const liveHumanCount = currentRoomId ? getRoomHumanCount(currentRoomId) : 0;
+          activeSession.recordTransition(player._prevRLState, player._prevRLAction, reward, currentState, {
+            source: 'live-human-room',
+            humanCount: liveHumanCount,
+            isHumanRoom: liveHumanCount > 0,
+            roomId: currentRoomId || null
+          });
         }
         if (rlActionIdx !== null) {
           player._prevRLState = currentState;
@@ -10628,6 +10635,13 @@ function updateAI() {
       const earlyFleetPhase = aiCombatUnits.length < Math.max(3, aiStrategy.academyUnlockUnits);
       const academyTimingReady = aiCombatUnits.length >= aiStrategy.academyUnlockUnits
         || (powerPlantCount >= 3 && shipyardCount >= 1);
+      const assaultCargoPressure = missileLauncherCount >= 2 || aiWorkers.length >= desiredWorkerCount + 2;
+      const academyUsePressure = currentCombatPower >= 520
+        || knownEnemyCount > 0
+        || assaultCargoPressure
+        || aiCombatUnits.length >= Math.max(5, aiStrategy.academyUnlockUnits + 1);
+      const academyEconomicReadiness = powerPlantCount >= 4 && shipyardCount >= 2 && player.resources >= 550;
+      const academyBuildReady = academyTimingReady && (academyUsePressure || academyEconomicReadiness);
       const desiredPowerPlants = earlyFleetPhase
         ? Math.max(2, Math.min(diffPreset.minPowerPlants || 2, aiStrategy.earlyPowerPlants))
         : Math.min(
@@ -10640,7 +10654,7 @@ function updateAI() {
       const desiredShipyards = hasNavalAcademy
         ? Math.min((diffPreset.minShipyards || 2) + (player.aiStrategyId === 'raider' ? 1 : 0), 3)
         : (powerPlantCount >= Math.max(2, aiStrategy.earlyPowerPlants - 1) ? 2 : 1);
-      const desiredNavalAcademies = (academyTimingReady || powerPlantCount >= 3 || shipyardCount >= 2)
+      const desiredNavalAcademies = academyBuildReady
         ? Math.min(3, Math.max(1, 1 + Math.floor(aiCombatUnits.length / 9) + (powerPlantCount >= 5 ? 1 : 0)))
         : 0;
       const desiredSilos = aiCombatUnits.length >= aiStrategy.siloUnlockUnits
@@ -10674,7 +10688,7 @@ function updateAI() {
         } else if (!hasShipyard && player.resources >= 200) {
           buildType = 'shipyard';
           buildCost = 200;
-        } else if (!hasNavalAcademy && academyTimingReady && player.resources - 300 >= 120) {
+        } else if (!hasNavalAcademy && academyBuildReady && player.resources - 300 >= 120) {
           buildType = 'naval_academy';
           buildCost = 300;
         } else if (earlyFleetPhase) {
@@ -10696,7 +10710,7 @@ function updateAI() {
             buildType = 'defense_tower';
             buildCost = 250;
           }
-        } else if (!hasNavalAcademy && powerPlantCount >= 3 && player.resources - 300 >= 150) {
+        } else if (!hasNavalAcademy && academyBuildReady && player.resources - 300 >= 150) {
           buildType = 'naval_academy';
           buildCost = 300;
         } else if (powerPlantCount < desiredPowerPlants && player.resources - 150 >= reserveForUnits) {

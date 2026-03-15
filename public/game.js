@@ -279,10 +279,11 @@ const POWER_PLANT_CYCLE_MS = 10000;
 const COASTAL_BUILDING_SIZE_SCALE = 0.6;
 const POWER_PLANT_SIZE_SCALE = COASTAL_BUILDING_SIZE_SCALE * 0.7;
 const FIXED_BUILDING_IMAGE_MAX_DIMENSION = 200;
-const DEFENSE_TOWER_CANNON_START = Object.freeze({ x: 14, y: 8 });
+const DEFENSE_TOWER_CANNON_START = Object.freeze({ x: 14, y: 12.5 });
 const DEFENSE_TOWER_CANNON_MUZZLE = Object.freeze({ x: 14, y: 17 });
-// turretcannon.png(17x9) 이미지에서의 회전 중심 좌표
-const DEFENSE_TOWER_CANNON_PIVOT = Object.freeze({ x: 8, y: -2 });
+// turretcannon.png(17x9)에서 밝은 회색 몸체의 중심을 회전축으로 사용한다.
+// 기존처럼 이미지 바깥(y < 0)을 축으로 잡으면 정면에서는 맞아 보여도 측면 회전 시 포탑 중심이 밀린다.
+const DEFENSE_TOWER_CANNON_PIVOT = Object.freeze({ x: 8, y: 2.5 });
 const DEFENSE_TOWER_CANNON_BASE_ANGLE = Math.PI / 2; // 6시 방향이 기본 총구 방향
 const AIRSTRIKE_TARGET_RADIUS = 400;
 const RECON_AIRCRAFT_COST = 150;

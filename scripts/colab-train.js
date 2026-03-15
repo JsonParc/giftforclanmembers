@@ -16,6 +16,7 @@ const DEFAULTS = {
   autoSaveMs: 60000,
   progressMs: 30000,
   outputDir: '',
+  outputPrefix: '',
   recordingMinScore: null,
   selfPlayMinReward: null
 };
@@ -92,6 +93,9 @@ function parseArgs(argv) {
         break;
       case '--output-dir':
         options.outputDir = String(argv[++i] || '');
+        break;
+      case '--output-prefix':
+        options.outputPrefix = String(argv[++i] || '');
         break;
       case '--recording-min-score':
         options.recordingMinScore = parseNumber(arg, argv[++i]);
@@ -224,6 +228,13 @@ async function main() {
   }
 
   const session = new TrainingSession(options.difficulty);
+  // If an output prefix is provided, keep trained weights in a separate file
+  if (options.outputPrefix) {
+    const prefix = String(options.outputPrefix).replace(/[^a-zA-Z0-9_-]/g, '') || options.difficulty;
+    session.weightsPath = path.join(ROOT_DIR, `ai-weights-${prefix}.json`);
+    session.compressedWeightsPath = path.join(ROOT_DIR, `ai-weights-${prefix}.json.gz`);
+    console.log(`[colab-train] Using output prefix: ${prefix} -> ${path.basename(session.compressedWeightsPath)}`);
+  }
   session.autoSaveInterval = options.autoSaveMs;
 
   if (options.recordingMinScore !== null || options.selfPlayMinReward !== null) {

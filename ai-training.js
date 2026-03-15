@@ -43,9 +43,40 @@ const RL_FAILURE_REPLAY_PENALTY_SCALE = (() => {
   const value = Number(process.env.MW_RL_FAILURE_REPLAY_PENALTY_SCALE || 1.15);
   return Number.isFinite(value) ? Math.max(0.1, Math.min(5, value)) : 1.15;
 })();
+// Util-reward mixing config: small additive util bonus scaled by alpha
+const RL_REWARD_UTIL_ALPHA = Math.max(0, Math.min(1, Number(process.env.MW_RL_REWARD_UTIL_ALPHA || 0.25)));
+const RL_REWARD_UTIL_ANNEAL_STEPS = Math.max(0, Math.floor(Number(process.env.MW_RL_REWARD_UTIL_ANNEAL_STEPS || 0)));
+// Event-usage reward toggles and scales
+const RL_EVENT_USE_REWARD_ENABLED = process.env.MW_RL_EVENT_USE_REWARD !== '0';
+const RL_EVENT_SLBM_REWARD = Math.max(0, Number(process.env.MW_RL_EVENT_SLBM_REWARD || 18));
+const RL_EVENT_AIRCRAFT_REWARD_PER = Math.max(0, Number(process.env.MW_RL_EVENT_AIRCRAFT_REWARD_PER || 0.6));
+// Tunable weights (safe defaults)
+const RL_BUILDING_WEIGHT = Math.max(0, Number(process.env.MW_RL_BUILDING_WEIGHT || 16));
+const RL_TECH_WEIGHT = Math.max(0, Number(process.env.MW_RL_TECH_WEIGHT || 12));
+const RL_IDLE_BUILDING_PENALTY = Math.max(0, Number(process.env.MW_RL_IDLE_BUILDING_PENALTY || 12));
+const RL_ENABLE_USAGE_WEIGHT = process.env.MW_RL_ENABLE_USAGE_WEIGHT !== '0';
+
+// Production bias multipliers to adjust preference for different ship classes
+const RL_PRODUCE_LIGHT_MULT = Math.max(0, Number(process.env.MW_RL_PRODUCE_LIGHT_MULT || 0.8));
+const RL_PRODUCE_HEAVY_MULT = Math.max(0, Number(process.env.MW_RL_PRODUCE_HEAVY_MULT || 1.05));
+const RL_PRODUCE_CARRIER_MULT = Math.max(0, Number(process.env.MW_RL_PRODUCE_CARRIER_MULT || 1.0));
+const RL_PRODUCE_SUB_MULT = Math.max(0, Number(process.env.MW_RL_PRODUCE_SUB_MULT || 1.0));
+
 const RL_FAILURE_REWARD_THRESHOLD = (() => {
   const value = Number(process.env.MW_RL_FAILURE_REWARD_THRESHOLD || 0);
   return Number.isFinite(value) ? value : 0;
+})();
+const RL_LIVE_HUMAN_TRANSITION_WEIGHT = (() => {
+  const value = Number(process.env.MW_RL_LIVE_HUMAN_TRANSITION_WEIGHT || 3);
+  return Number.isFinite(value) ? Math.max(1, Math.min(12, Math.round(value))) : 3;
+})();
+const RL_LIVE_SAVE_INTERVAL_MS = (() => {
+  const value = Number(process.env.MW_RL_LIVE_SAVE_INTERVAL_MS || 15000);
+  return Number.isFinite(value) ? Math.max(5000, Math.floor(value)) : 15000;
+})();
+const RL_LIVE_SAVE_TRANSITION_BATCH = (() => {
+  const value = Number(process.env.MW_RL_LIVE_SAVE_TRANSITION_BATCH || 240);
+  return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 240;
 })();
 
 // ========== STATE ENCODING ==========
@@ -78,10 +109,10 @@ const COMBAT_POWER_MAP = {
   frigate: 38,
   destroyer: 95,
   cruiser: 260,
-  battleship: 780,
-  carrier: 560,
-  submarine: 420,
-  assaultship: 260,
+  battleship: 1080,
+  carrier: 720,
+  submarine: 500,
+  assaultship: 380,
   missile_launcher: 520
 };
 
@@ -152,12 +183,12 @@ const DEFENSE_RESPONSE_ACTION_WEIGHTS = Object.freeze({
   use_airstrike: 0.8,
   skill_search: 0.7,
   lay_mines: 0.55,
-  build_defense_tower: 0.5,
+  build_defense_tower: 0.8,
   produce_missile_launcher: 0.45,
   produce_cruiser: 0.3,
   produce_battleship: 0.25,
-  produce_carrier: 0.22,
-  produce_submarine: 0.18
+  produce_carrier: 0.32,
+  produce_submarine: 0.28
 });
 
 function getLightFleetRatio(source) {
@@ -394,6 +425,143 @@ function getPreferredWorkerTarget(source) {
   return 3;
 }
 
+function getCapitalHullCount(source) {
+  return (
+    Math.max(0, Math.floor(source?.battleshipCount || 0)) +
+    Math.max(0, Math.floor(source?.carrierCount || 0)) +
+    Math.max(0, Math.floor(source?.submarineCount || 0)) +
+    Math.max(0, Math.floor(source?.assaultshipCount || 0))
+  );
+}
+
+function getCapitalFleetStrategicScore(source) {
+  return (
+    Math.max(0, Math.floor(source?.battleshipCount || 0)) * 2.8 +
+    Math.max(0, Math.floor(source?.carrierCount || 0)) * 2.2 +
+    Math.max(0, Math.floor(source?.submarineCount || 0)) * 1.8 +
+    Math.max(0, Math.floor(source?.assaultshipCount || 0)) * 1.5
+  );
+}
+
+function getHeavyNavalPressureScore(source) {
+  const powerPlantCount = getBuildingCountFromSource(source, 'power_plant');
+  const shipyardCount = getBuildingCountFromSource(source, 'shipyard');
+  const academyCount = getBuildingCountFromSource(source, 'naval_academy');
+  const combatPopulation = getCombatPopulation(source);
+  const combatPower = Math.max(0, Math.floor(source?.combatPower || 0));
+  const enemyCombatPower = Math.max(0, Math.floor(source?.enemyCombatPower || 0));
+  const enemyBuildingCount = Math.max(0, Math.floor(source?.enemyBuildingCount || 0));
+  const lightFleetRatio = getLightFleetRatio(source);
+  const capitalHullCount = getCapitalHullCount(source);
+  let score = 0;
+  if (powerPlantCount >= 4) score += 0.8;
+  if (shipyardCount >= 2) score += 0.35;
+  if (academyCount > 0) score += 0.45;
+  if (combatPopulation >= 6) score += 0.28;
+  if (combatPower >= 420) score += 0.22;
+  if (enemyCombatPower >= Math.max(320, combatPower * 0.85)) score += 0.48;
+  if (enemyBuildingCount >= 4) score += 0.28;
+  if (lightFleetRatio > 0.48) score += Math.min(0.95, (lightFleetRatio - 0.48) * 3.8);
+  if (capitalHullCount <= 0 && combatPopulation >= 8) score += 0.25;
+  return score;
+}
+
+function getAssaultShipUtilityScore(source) {
+  const launcherCount = Math.max(0, Math.floor(source?.launcherCount || 0))
+    + Math.max(0, Math.floor(source?.deployedLauncherCount || 0));
+  const workerCount = Math.max(0, Math.floor(source?.workerCount || 0));
+  const assaultshipCount = Math.max(0, Math.floor(source?.assaultshipCount || 0));
+  const battleshipCount = Math.max(0, Math.floor(source?.battleshipCount || 0));
+  const carrierCount = Math.max(0, Math.floor(source?.carrierCount || 0));
+  const enemyBuildingCount = Math.max(0, Math.floor(source?.enemyBuildingCount || 0));
+  const lightFleetRatio = getLightFleetRatio(source);
+  const heavyPressure = getHeavyNavalPressureScore(source);
+  const surplusWorkers = Math.max(0, workerCount - getPreferredWorkerTarget(source));
+  const heavyHullGap = battleshipCount + carrierCount + assaultshipCount <= 0 ? 1 : 0;
+  let score = 0;
+  score += Math.min(3, launcherCount) * 0.82;
+  score += surplusWorkers * 0.2;
+  if (enemyBuildingCount >= 4) score += 0.45;
+  if (heavyPressure >= 1.35 && heavyHullGap > 0) score += 0.9;
+  if (lightFleetRatio > 0.54) score += 0.42;
+  score -= assaultshipCount * 0.9;
+  if (launcherCount <= 0 && surplusWorkers <= 0 && heavyPressure < 1.35) score -= 0.65;
+  return score;
+}
+
+function getNavalAcademyDemandScore(source) {
+  const powerPlantCount = getBuildingCountFromSource(source, 'power_plant');
+  const shipyardCount = getBuildingCountFromSource(source, 'shipyard');
+  const missileSiloCount = getBuildingCountFromSource(source, 'missile_silo');
+  const combatPopulation = getCombatPopulation(source);
+  const combatPower = Math.max(0, Math.floor(source?.combatPower || 0));
+  const enemyBuildingCount = Math.max(0, Math.floor(source?.enemyBuildingCount || 0));
+  const enemyCombatPower = Math.max(0, Math.floor(source?.enemyCombatPower || 0));
+  const launcherCount = Math.max(0, Math.floor(source?.launcherCount || 0))
+    + Math.max(0, Math.floor(source?.deployedLauncherCount || 0));
+  const assaultUtility = getAssaultShipUtilityScore(source);
+  const heavyPressure = getHeavyNavalPressureScore(source);
+  let score = 0;
+  if (shipyardCount > 0 && powerPlantCount >= 3) score += 1.2;
+  if (shipyardCount >= 2) score += 0.45;
+  if (powerPlantCount >= 4) score += 0.45;
+  if (combatPopulation >= 6) score += 0.4;
+  if (combatPower >= 420) score += 0.6;
+  if (enemyBuildingCount >= 4) score += 0.35;
+  if (enemyCombatPower >= Math.max(320, combatPower * 0.85)) score += 0.25;
+  if (launcherCount > 0 || missileSiloCount > 0) score += 0.8;
+  score += Math.min(1.2, heavyPressure * 0.35);
+  if (assaultUtility >= 1.1) score += 0.65;
+  if (launcherCount <= 0 && Math.max(0, Math.floor(source?.workerCount || 0)) <= 1) score -= 0.7;
+  return score;
+}
+
+function getCapitalShipProductionBonus(state, itemType) {
+  const powerPlantCount = getCompletedBuildingCount(state, 'power_plant');
+  const academyCount = getCompletedBuildingCount(state, 'naval_academy');
+  const destroyerCount = Math.max(0, Math.floor(state.destroyerCount || 0));
+  const cruiserCount = Math.max(0, Math.floor(state.cruiserCount || 0));
+  const battleshipCount = Math.max(0, Math.floor(state.battleshipCount || 0));
+  const carrierCount = Math.max(0, Math.floor(state.carrierCount || 0));
+  const submarineCount = Math.max(0, Math.floor(state.submarineCount || 0));
+  const lightFleetRatio = getLightFleetRatio(state);
+  const heavyPressure = getHeavyNavalPressureScore(state);
+  const escortCount = destroyerCount + cruiserCount;
+  if (academyCount <= 0) return 0;
+
+  switch (itemType) {
+    case 'battleship': {
+      let bonus = powerPlantCount >= 4 ? 0.45 : -0.2;
+      if (heavyPressure >= 1.25) bonus += 0.55 + Math.min(0.5, heavyPressure * 0.2);
+      if (lightFleetRatio > 0.52) bonus += 0.32;
+      if (battleshipCount <= 0) bonus += 0.2;
+      return bonus;
+    }
+    case 'carrier': {
+      let bonus = powerPlantCount >= 4 ? 0.45 : -0.22;
+      if (escortCount > 0) bonus += 0.3;
+      if (heavyPressure >= 1.2) bonus += 0.38 + Math.min(0.38, heavyPressure * 0.16);
+      if (carrierCount <= 0) bonus += 0.14;
+      return bonus;
+    }
+    case 'submarine': {
+      let bonus = powerPlantCount >= 4 ? 0.4 : -0.16;
+      if (getCompletedBuildingCount(state, 'missile_silo') > 0) bonus += 0.42;
+      if (heavyPressure >= 1.15) bonus += 0.22;
+      if (submarineCount <= 0) bonus += 0.12;
+      return bonus;
+    }
+    default:
+      return 0;
+  }
+}
+
+function getRangeTierCombatMultiplier(rangeTier) {
+  if (rangeTier >= 3) return 1.55;
+  if (rangeTier >= 2) return 1.18;
+  return 1.0;
+}
+
 function getQueuedBuildingReward(state, buildingType) {
   const powerPlantCount = getCompletedBuildingCount(state, 'power_plant');
   const shipyardCount = getCompletedBuildingCount(state, 'shipyard');
@@ -405,7 +573,8 @@ function getQueuedBuildingReward(state, buildingType) {
   const shipyardLoad = getSimulationProducerLoad(state, 'shipyard');
   const freePopulation = Math.max(0, Math.floor((state.maxPopulation || 0) - (state.population || 0)));
   const populationUtilization = getPopulationUtilization(state);
-  const towerPressure = state.enemyCombatPower > Math.max(180, state.combatPower * 0.75);
+  const towerPressure = state.enemyCombatPower > Math.max(160, state.combatPower * 0.72);
+  const academyDemand = getNavalAcademyDemandScore(state);
   switch (buildingType) {
     case 'power_plant':
       if (powerPlantCount <= 1) return 1.35 + (freePopulation <= 4 ? 0.2 : 0);
@@ -417,9 +586,10 @@ function getQueuedBuildingReward(state, buildingType) {
       return 0.35;
     case 'naval_academy':
       if (shipyardCount <= 0) return 0.1;
+      if (academyDemand < 1.8) return 0.18 + (freePopulation <= 8 ? 0.08 : 0);
       return academyCount <= 0 && energyIncome >= 8 && powerPlantCount >= 3
         ? 2.65 + (populationUtilization >= 0.68 ? 0.34 : 0) + (shipyardCount >= 2 ? 0.18 : 0)
-        : 0.95 + (freePopulation <= 8 ? 0.2 : 0);
+        : 0.7 + (freePopulation <= 8 ? 0.16 : 0);
     case 'missile_silo':
       return academyCount > 0 && energyIncome >= 14
         ? 1.8
@@ -454,6 +624,15 @@ function getQueuedProductionReward(state, itemType) {
         + Math.min(0.45, slbmOpportunity * 0.035)
       : 0.12;
   }
+  if (itemType === 'assaultship') {
+    const assaultshipCount = Math.max(0, Math.floor(state.assaultshipCount || 0));
+    const assaultUtility = getAssaultShipUtilityScore(state);
+    let reward = assaultUtility >= 1.1
+      ? 0.55 + Math.min(0.45, assaultUtility * 0.18)
+      : -0.25;
+    if (assaultshipCount > 0) reward -= 0.5 * assaultshipCount;
+    return reward;
+  }
 
   const diversity = getFleetDiversityScore(state);
   const dominantType = getDominantCombatUnitType(state);
@@ -471,6 +650,7 @@ function getQueuedProductionReward(state, itemType) {
   reward += Math.min(0.35, combatPopulation * 0.006);
   if (populationUtilization >= 0.55) reward += 0.08;
   if (populationUtilization >= 0.78) reward += 0.1;
+  reward += getCapitalShipProductionBonus(state, itemType);
   if (itemType === 'missile_launcher') {
     if (getCompletedBuildingCount(state, 'carbase') > 0) reward += 0.24;
     if (state.enemyCombatPower > Math.max(240, state.combatPower * 0.82)) reward += 0.22;
@@ -484,6 +664,14 @@ function getQueuedProductionReward(state, itemType) {
   if (itemType === 'submarine' && getCompletedBuildingCount(state, 'missile_silo') > 0) {
     reward += 0.24 + Math.min(0.24, getSoloSlbmStrikeOpportunity(state) * 0.02);
   }
+  // Optionally scale completion rewards by recent utilization (keeps completion reward tied to usefulness)
+  try {
+    if (RL_ENABLE_USAGE_WEIGHT && typeof computeUtilReward === 'function') {
+      const utilNorm = Math.min(1, computeUtilReward(state) / 20);
+      const mult = 0.75 + 0.5 * utilNorm; // range ~0.75..1.25
+      reward *= mult;
+    }
+  } catch (err) {}
   return reward;
 }
 
@@ -498,7 +686,8 @@ function getCompletedBuildingReward(state, buildingType, baseReward) {
   const spendPressure = energySpend - (energyIncome + SIM_BASE_PASSIVE_INCOME);
   const freePopulation = Math.max(0, Math.floor((state.maxPopulation || 0) - (state.population || 0)));
   const populationUtilization = getPopulationUtilization(state);
-  const towerPressure = state.enemyCombatPower > Math.max(180, state.combatPower * 0.75);
+  const towerPressure = state.enemyCombatPower > Math.max(160, state.combatPower * 0.72);
+  const academyDemand = getNavalAcademyDemandScore(state);
   switch (buildingType) {
     case 'power_plant':
       reward += powerPlantCount <= 2 ? 1.0 : (spendPressure > 4 ? 0.6 : 0.2);
@@ -509,7 +698,9 @@ function getCompletedBuildingReward(state, buildingType, baseReward) {
       if (freePopulation <= 6) reward += 0.2;
       break;
     case 'naval_academy':
-      reward += academyCount <= 1 ? 3.15 : 1.1;
+      reward += academyDemand >= 1.8
+        ? (academyCount <= 1 ? 3.15 : 1.1)
+        : (academyCount <= 1 ? 0.75 : 0.22);
       if (populationUtilization >= 0.7) reward += 0.25;
       break;
     case 'missile_silo':
@@ -528,6 +719,13 @@ function getCompletedBuildingReward(state, buildingType, baseReward) {
     default:
       break;
   }
+  try {
+    if (RL_ENABLE_USAGE_WEIGHT && typeof computeUtilReward === 'function') {
+      const utilNorm = Math.min(1, computeUtilReward(state) / 20);
+      const mult = 0.75 + 0.5 * utilNorm;
+      reward *= mult;
+    }
+  } catch (err) {}
   return reward;
 }
 
@@ -545,6 +743,15 @@ function getCompletedProductionReward(state, itemType, baseReward) {
         : 0.24
     );
   }
+  if (itemType === 'assaultship') {
+    const assaultshipCount = Math.max(0, Math.floor(state.assaultshipCount || 0));
+    const assaultUtility = getAssaultShipUtilityScore(state);
+    reward += assaultUtility >= 1.1
+      ? 0.7 + Math.min(0.5, assaultUtility * 0.2)
+      : -0.15;
+    if (assaultshipCount > 1) reward -= 0.55 * (assaultshipCount - 1);
+    return reward;
+  }
 
   const diversity = getFleetDiversityScore(state);
   const dominantType = getDominantCombatUnitType(state);
@@ -561,6 +768,7 @@ function getCompletedProductionReward(state, itemType, baseReward) {
   reward += Math.min(0.45, combatPopulation * 0.008);
   if (populationUtilization >= 0.6) reward += 0.1;
   if (populationUtilization >= 0.8) reward += 0.12;
+  reward += getCapitalShipProductionBonus(state, itemType) * 1.15;
   if ((itemType === 'battleship' || itemType === 'carrier' || itemType === 'submarine') && techScore >= 6 && powerPlantCount >= 4) {
     reward += 0.28;
   }
@@ -580,6 +788,42 @@ function getCompletedProductionReward(state, itemType, baseReward) {
     reward += 0.3;
   }
   return reward;
+}
+
+// Compute a small, normalized utilization-based reward for naval/defense usage.
+// Returns a positive numeric bonus (unscaled); caller should scale by alpha.
+function computeUtilReward(agent) {
+  if (!agent || typeof agent !== 'object') return 0;
+  const carrierCount = Math.max(0, Math.floor(agent.carrierCount || 0));
+  const aircraftCount = Math.max(0, Math.floor(agent.aircraftCount || 0));
+  const carrierFrac = carrierCount > 0 ? Math.min(1, aircraftCount / (carrierCount * 10)) : 0;
+
+  const submarineCount = Math.max(0, Math.floor(agent.submarineCount || 0));
+  const loadedSlbmCount = Math.max(0, Math.floor(agent.loadedSlbmCount || 0));
+  const subFrac = submarineCount > 0 ? Math.min(1, loadedSlbmCount / (submarineCount * SUBMARINE_SLBM_CAPACITY)) : 0;
+
+  const towerScore = getStrategicDefenseScore(agent) || 0;
+  const towerNorm = Math.tanh(towerScore / 3); // normalize to ~(-1..1) but towerScore >=0 so ~0..1
+
+  // weights chosen to keep util bonus moderate relative to existing score magnitudes
+  const carrierWeight = 12; // max contribution ~12
+  const subWeight = 12;     // max contribution ~12
+  const towerWeight = 8;    // max contribution ~8
+
+  const util = (carrierFrac * carrierWeight) + (subFrac * subWeight) + (towerNorm * towerWeight);
+  return Math.max(0, util);
+}
+
+// Conservative idle-building penalty estimator — uses building retention score to estimate useful buildings
+function getIdleBuildingPenalty(agent) {
+  try {
+    const retention = getBuildingRetentionScore(agent) || 0;
+    const usefulEstimate = Math.max(0, Math.round(retention / 6));
+    const buildingCount = Math.max(0, Math.floor(agent.buildingCount || 0));
+    return Math.max(0, buildingCount - usefulEstimate);
+  } catch (err) {
+    return 0;
+  }
 }
 
 // Unit range tiers (abstracted from actual game values)
@@ -694,13 +938,13 @@ const SIM_BUILDING_DEFS = Object.freeze({
 
 const SIM_UNIT_DEFS = Object.freeze({
   worker: { cost: 50, pop: 1, buildTime: 3000, combatPower: 0, producer: 'headquarters', countField: 'workerCount', completionReward: 0.6 },
-  frigate: { cost: 135, pop: 1, buildTime: 6000, combatPower: COMBAT_POWER_MAP.frigate, producer: 'shipyard', countField: 'frigateCount', completionReward: 1.0 },
+  frigate: { cost: 135, pop: 1, buildTime: 6000, combatPower: COMBAT_POWER_MAP.frigate, producer: 'shipyard', countField: 'frigateCount', completionReward: 0.95 },
   destroyer: { cost: 170, pop: 2, buildTime: 9000, combatPower: COMBAT_POWER_MAP.destroyer, producer: 'shipyard', countField: 'destroyerCount', completionReward: 1.0 },
-  cruiser: { cost: 285, pop: 3, buildTime: 14000, combatPower: COMBAT_POWER_MAP.cruiser, producer: 'shipyard', countField: 'cruiserCount', completionReward: 1.0 },
-  battleship: { cost: 2400, pop: 20, buildTime: 70000, combatPower: COMBAT_POWER_MAP.battleship, producer: 'naval_academy', countField: 'battleshipCount', completionReward: 1.0 },
-  carrier: { cost: 1600, pop: 12, buildTime: 40000, combatPower: COMBAT_POWER_MAP.carrier, producer: 'naval_academy', countField: 'carrierCount', completionReward: 1.0 },
-  assaultship: { cost: 1000, pop: 10, buildTime: 26000, combatPower: COMBAT_POWER_MAP.assaultship, producer: 'naval_academy', countField: 'assaultshipCount', completionReward: 1.0 },
-  submarine: { cost: 1800, pop: 8, buildTime: 30000, combatPower: COMBAT_POWER_MAP.submarine, producer: 'naval_academy', countField: 'submarineCount', completionReward: 1.0 },
+  cruiser: { cost: 285, pop: 3, buildTime: 14000, combatPower: COMBAT_POWER_MAP.cruiser, producer: 'shipyard', countField: 'cruiserCount', completionReward: 1.2 },
+  battleship: { cost: 2400, pop: 20, buildTime: 70000, combatPower: COMBAT_POWER_MAP.battleship, producer: 'naval_academy', countField: 'battleshipCount', completionReward: 2.8 },
+  carrier: { cost: 1600, pop: 12, buildTime: 40000, combatPower: COMBAT_POWER_MAP.carrier, producer: 'naval_academy', countField: 'carrierCount', completionReward: 2.25 },
+  assaultship: { cost: 1000, pop: 10, buildTime: 26000, combatPower: COMBAT_POWER_MAP.assaultship, producer: 'naval_academy', countField: 'assaultshipCount', completionReward: 1.8 },
+  submarine: { cost: 1800, pop: 8, buildTime: 30000, combatPower: COMBAT_POWER_MAP.submarine, producer: 'naval_academy', countField: 'submarineCount', completionReward: 2.05 },
   missile_launcher: { cost: 2200, pop: 4, buildTime: 18000, combatPower: COMBAT_POWER_MAP.missile_launcher, producer: 'carbase', countField: 'launcherCount', completionReward: 1.35 },
   slbm: { cost: 1500, pop: 0, buildTime: 45000, combatPower: 0, producer: 'missile_silo', countField: null, completionReward: 1.2 }
 });
@@ -1686,6 +1930,8 @@ function calculateReward(prevSnapshot, currentSnapshot, previousAction = null) {
   const defenseResponseWeight = getDefenseResponseActionWeight(previousAction);
   const prevBuildingRetentionScore = getBuildingRetentionScore(prevSnapshot);
   const currentBuildingRetentionScore = getBuildingRetentionScore(currentSnapshot);
+  const prevCapitalFleetScore = getCapitalFleetStrategicScore(prevSnapshot);
+  const currentCapitalFleetScore = getCapitalFleetStrategicScore(currentSnapshot);
 
   const workerLosses = Math.max(0, prevSnapshot.workerCount - currentSnapshot.workerCount);
   reward -= workerLosses * 2.5;
@@ -1766,8 +2012,12 @@ function calculateReward(prevSnapshot, currentSnapshot, previousAction = null) {
   // Tech progression and fleet variety matter more than raw spam.
   const techDiff = currentSnapshot.techScore - prevSnapshot.techScore;
   reward += techDiff * 1.4;
+  const heavyNavalPressure = getHeavyNavalPressureScore(currentSnapshot);
+  reward += (currentCapitalFleetScore - prevCapitalFleetScore) * (heavyNavalPressure >= 1.2 ? 0.7 : 0.32);
   const academyReady = (currentSnapshot.powerPlantCount || 0) >= 3 && (currentSnapshot.shipyardCount || 0) >= 1;
-  if (academyReady && (currentSnapshot.navalAcademyCount || 0) <= 0) reward -= 0.6;
+  if (academyReady && (currentSnapshot.navalAcademyCount || 0) <= 0 && getNavalAcademyDemandScore(currentSnapshot) >= 2.2) {
+    reward -= 0.6;
+  }
   if (
     (currentSnapshot.navalAcademyCount || 0) > 0
     && (currentSnapshot.powerPlantCount || 0) >= 4
@@ -2048,6 +2298,7 @@ class TrainingSession {
     this.trainingLog = [];
     this.lastSaveTime = 0;
     this.autoSaveInterval = 60000;
+    this.liveTransitionsSinceSave = 0;
     this.lastLoadedSource = null;
     this.lastSavedSource = null;
     this.lastPruneStats = {
@@ -2068,7 +2319,10 @@ class TrainingSession {
       learnFromFailures: RL_FAILURE_REPLAY_ENABLED,
       failureReplayLimit: RL_FAILURE_REPLAY_LIMIT,
       failurePenaltyScale: RL_FAILURE_REPLAY_PENALTY_SCALE,
-      failureRewardThreshold: RL_FAILURE_REWARD_THRESHOLD
+      failureRewardThreshold: RL_FAILURE_REWARD_THRESHOLD,
+      liveHumanTransitionWeight: RL_LIVE_HUMAN_TRANSITION_WEIGHT,
+      liveSaveIntervalMs: RL_LIVE_SAVE_INTERVAL_MS,
+      liveSaveTransitionBatch: RL_LIVE_SAVE_TRANSITION_BATCH
     };
     this.recordingStats = {
       solo: {
@@ -2098,6 +2352,19 @@ class TrainingSession {
         lastDiscardedWinnerScore: null,
         lastDiscardedAgentCount: 0,
         lastFailureReplayAgentCount: 0
+      },
+      live: {
+        attempted: 0,
+        accepted: 0,
+        acceptedTransitions: 0,
+        weightedUpdates: 0,
+        humanRoomTransitions: 0,
+        aiRoomTransitions: 0,
+        autosaves: 0,
+        lastReward: null,
+        lastWeight: 0,
+        lastHumanCount: 0,
+        lastSource: null
       }
     };
     this.currentTrainingMode = null;
@@ -2210,6 +2477,24 @@ class TrainingSession {
         this.recordingPolicy.failureRewardThreshold = failureRewardThreshold;
       }
     }
+    if (policy.liveHumanTransitionWeight !== undefined) {
+      const liveHumanTransitionWeight = Number(policy.liveHumanTransitionWeight);
+      if (Number.isFinite(liveHumanTransitionWeight)) {
+        this.recordingPolicy.liveHumanTransitionWeight = Math.max(1, Math.min(12, Math.round(liveHumanTransitionWeight)));
+      }
+    }
+    if (policy.liveSaveIntervalMs !== undefined) {
+      const liveSaveIntervalMs = Number(policy.liveSaveIntervalMs);
+      if (Number.isFinite(liveSaveIntervalMs)) {
+        this.recordingPolicy.liveSaveIntervalMs = Math.max(5000, Math.floor(liveSaveIntervalMs));
+      }
+    }
+    if (policy.liveSaveTransitionBatch !== undefined) {
+      const liveSaveTransitionBatch = Number(policy.liveSaveTransitionBatch);
+      if (Number.isFinite(liveSaveTransitionBatch)) {
+        this.recordingPolicy.liveSaveTransitionBatch = Math.max(1, Math.floor(liveSaveTransitionBatch));
+      }
+    }
     if (this.selfPlayArena) {
       this.selfPlayArena.minRecordScore = this.recordingPolicy.minScore;
       this.selfPlayArena.minAgentReward = this.recordingPolicy.minSelfPlayReward;
@@ -2252,6 +2537,8 @@ class TrainingSession {
         sizeBytes: savedStats.size,
         mtimeMs: savedStats.mtimeMs
       };
+      this.lastSaveTime = Date.now();
+      this.liveTransitionsSinceSave = 0;
       console.log(
         `[AI-RL][${this.difficulty}] Saved weights: ${data.stateCount} states, frozen: ${this.frozen}, ` +
         `pruned: ${pruneStats.prunedStates}, file: ${path.basename(this.compressedWeightsPath)}`
@@ -2366,9 +2653,51 @@ class TrainingSession {
    * Record a transition during live gameplay (online learning).
    * Skipped if frozen.
    */
-  recordTransition(prevState, action, reward, nextState) {
+  recordTransition(prevState, action, reward, nextState, options = {}) {
     if (this.frozen) return;
-    this.qTable.update(prevState, action, reward, nextState);
+    const source = typeof options.source === 'string' ? options.source : 'live';
+    const humanCount = Number.isFinite(options.humanCount) ? Math.max(0, Math.floor(options.humanCount)) : 0;
+    const isHumanRoom = options.isHumanRoom !== undefined ? !!options.isHumanRoom : humanCount > 0;
+    const configuredWeight = Number.isFinite(options.weight) ? options.weight : null;
+    const repeatCount = Math.max(
+      1,
+      Math.min(
+        12,
+        Math.round(configuredWeight || (isHumanRoom ? this.recordingPolicy.liveHumanTransitionWeight : 1))
+      )
+    );
+
+    for (let i = 0; i < repeatCount; i++) {
+      this.qTable.update(prevState, action, reward, nextState);
+    }
+
+    const liveStats = this.recordingStats.live;
+    if (liveStats) {
+      liveStats.attempted++;
+      liveStats.accepted++;
+      liveStats.acceptedTransitions++;
+      liveStats.weightedUpdates += repeatCount;
+      if (isHumanRoom) {
+        liveStats.humanRoomTransitions++;
+      } else {
+        liveStats.aiRoomTransitions++;
+      }
+      liveStats.lastReward = Math.round((Number(reward) || 0) * 100) / 100;
+      liveStats.lastWeight = repeatCount;
+      liveStats.lastHumanCount = humanCount;
+      liveStats.lastSource = source;
+    }
+
+    this.liveTransitionsSinceSave += repeatCount;
+    const now = Date.now();
+    if (
+      (now - this.lastSaveTime) >= this.recordingPolicy.liveSaveIntervalMs ||
+      this.liveTransitionsSinceSave >= this.recordingPolicy.liveSaveTransitionBatch
+    ) {
+      if (this.saveWeights() && liveStats) {
+        liveStats.autosaves++;
+      }
+    }
   }
 
   /**
@@ -2820,6 +3149,8 @@ class TrainingSession {
           reward += destroyedBuildings * (12 + Math.min(8, slbmOpportunity * 0.45));
           reward += Math.min(4.5, slbmOpportunity * 0.22);
           if (s.enemyCombatPower > 200) reward += 1.4;
+          // record SLBM usage event for downstream reward shaping
+          s.slbmFiredCount = Math.max(0, Math.floor(s.slbmFiredCount || 0)) + 1;
         } else if (s.storedSlbmCount > 0) {
           reward -= 0.8; // Produced missiles exist, but firing without loading is invalid.
         } else {
@@ -2829,7 +3160,9 @@ class TrainingSession {
       case 'use_airstrike':
         // Requires carrier with 10 aircraft, consumes all, 3 passes of 240 dmg
         if (s.carrierCount > 0 && s.aircraftCount >= 10) {
-          s.aircraftCount = 0;
+          const usedAircraft = Math.min(s.aircraftCount || 0, 10);
+          s.aircraftCount = Math.max(0, (s.aircraftCount || 0) - usedAircraft);
+          s.aircraftSortieCount = Math.max(0, Math.floor(s.aircraftSortieCount || 0)) + usedAircraft;
           const dmg = 720 * (s.enemyDistance <= 1 ? 1.0 : 0.5); // Range matters: far = half effect
           s.enemyCombatPower = Math.max(0, s.enemyCombatPower - dmg);
           if (Math.random() < 0.4) s.enemyBuildingCount = Math.max(0, s.enemyBuildingCount - 1);
@@ -3395,6 +3728,8 @@ class SelfPlayArena {
     const powerPlantCount = getCompletedBuildingCount(agent, 'power_plant');
     const missileSiloCount = getCompletedBuildingCount(agent, 'missile_silo');
     const towerCount = getCompletedBuildingCount(agent, 'defense_tower');
+    const academyDemand = getNavalAcademyDemandScore(agent);
+    const assaultUtility = getAssaultShipUtilityScore(agent);
     const lightFleetRatio = getLightFleetRatio(agent);
     const storedSlbmCount = Math.max(0, Math.floor(agent.storedSlbmCount || 0));
     const loadedSlbmCount = Math.max(0, Math.floor(agent.loadedSlbmCount || 0));
@@ -3419,6 +3754,7 @@ class SelfPlayArena {
         bias += profile.tech * 0.9 + profile.heavyFleet * 0.18 + profile.carrier * 0.12 + profile.submarine * 0.12;
         if (shipyardCount <= 0) bias -= 0.1;
         if (academyCount <= 0 && powerPlantCount >= 3 && shipyardCount >= 1) bias += 0.28;
+        if (academyDemand < 1.8) bias -= 0.55;
         break;
       case 'build_missile_silo':
       case 'build_carbase':
@@ -3437,33 +3773,34 @@ class SelfPlayArena {
         bias += profile.economy * 0.75;
         break;
       case 'produce_frigate':
-        bias += profile.lightFleet * 0.9 + profile.aggression * 0.28 + profile.scouting * 0.12;
+        bias += (profile.lightFleet * 0.9) * RL_PRODUCE_LIGHT_MULT + profile.aggression * 0.28 + profile.scouting * 0.12;
         if (lateTechPressure && lightFleetRatio > 0.52) bias -= 0.24;
         break;
       case 'produce_destroyer':
-        bias += profile.lightFleet * 0.6 + profile.aggression * 0.34 + profile.defense * 0.08;
+        bias += (profile.lightFleet * 0.6) * RL_PRODUCE_LIGHT_MULT + profile.aggression * 0.34 + profile.defense * 0.08;
         if (lateTechPressure && lightFleetRatio > 0.52) bias -= 0.22;
         break;
       case 'produce_cruiser':
-        bias += profile.heavyFleet * 0.52 + profile.defense * 0.18 + profile.tech * 0.15;
+        bias += (profile.heavyFleet * 0.52) * RL_PRODUCE_HEAVY_MULT + profile.defense * 0.18 + profile.tech * 0.15;
         if (shipyardCount >= 2 || academyCount > 0) bias += 0.05;
         if (lateTechPressure && lightFleetRatio > 0.48) bias += 0.16;
         break;
       case 'produce_battleship':
-        bias += profile.heavyFleet * 0.95 + profile.tech * 0.22;
+        bias += (profile.heavyFleet * 0.95) * RL_PRODUCE_HEAVY_MULT + profile.tech * 0.22;
         if (lateTechPressure && lightFleetRatio > 0.48) bias += 0.18;
         break;
       case 'produce_carrier':
-        bias += profile.carrier * 1.05 + profile.tech * 0.25 + profile.scouting * 0.12;
+        bias += (profile.carrier * 1.05) * RL_PRODUCE_CARRIER_MULT + profile.tech * 0.25 + profile.scouting * 0.12;
         if (lateTechPressure && lightFleetRatio > 0.48) bias += 0.14;
         break;
       case 'produce_submarine':
-        bias += profile.submarine * 1.05 + profile.aggression * 0.12 + profile.tech * 0.15;
+        bias += (profile.submarine * 1.05) * RL_PRODUCE_SUB_MULT + profile.aggression * 0.12 + profile.tech * 0.15;
         if (lateTechPressure && lightFleetRatio > 0.48) bias += 0.14;
         if (missileSiloCount > 0) bias += 0.18 + Math.min(0.2, slbmOpportunity * 0.014);
         break;
       case 'produce_assaultship':
         bias += profile.heavyFleet * 0.3 + profile.missile * 0.2 + profile.aggression * 0.2;
+        if (assaultUtility < 1.1) bias -= 0.7;
         break;
       case 'produce_missile_launcher':
       case 'produce_slbm':
@@ -3915,20 +4252,28 @@ class SelfPlayArena {
     const techScore = getTechProgressScore(agent);
     const energyIncome = getSimulationEnergyIncomePerSecond(agent);
     const energySpend = getSimulationEnergySpendPerSecond(agent);
+    const powerPlantCount = getCompletedBuildingCount(agent, 'power_plant');
+    const academyCount = getCompletedBuildingCount(agent, 'naval_academy');
     const buildingRetentionScore = getBuildingRetentionScore(agent);
     const defenseSetupScore = getStrategicDefenseScore(agent);
     const fleetDiversity = getFleetDiversityScore(agent);
     const fleetDominance = getFleetDominanceRatio(agent);
     const lightFleetRatio = getLightFleetRatio(agent);
+    const capitalFleetScore = getCapitalFleetStrategicScore(agent);
+    const heavyNavalPressure = getHeavyNavalPressureScore(agent);
     const population = getPopulationUsage(agent);
     const maxPopulation = getPopulationCapacity(agent);
     const combatPopulation = getCombatPopulation(agent);
     const populationUtilization = getPopulationUtilization(agent);
     score += agent.combatPower * 0.35;
-    score += agent.buildingCount * 35;
+    // building count weighted by tunable constant (safer default than previous hard 35)
+    score += (agent.buildingCount || 0) * RL_BUILDING_WEIGHT;
+    // small penalty for likely idle buildings (keeps build-from-count from being overvalued)
+    score -= getIdleBuildingPenalty(agent) * RL_IDLE_BUILDING_PENALTY;
     score += buildingRetentionScore * 5;
     score += defenseSetupScore * 14;
-    score += techScore * 22;
+    // tech score with tunable weight and diminishing effect
+    score += Math.min(techScore, 12) * RL_TECH_WEIGHT;
     score += energyIncome * 10;
     score += getEconomyTempoScore({ energyIncomePerSec: energyIncome, energySpendPerSec: energySpend }) * 8;
     score += population * 2.8;
@@ -3936,8 +4281,11 @@ class SelfPlayArena {
     score += combatPopulation * 4.2;
     score += Math.max(0, populationUtilization - 0.35) * 180;
     score += fleetDiversity * 18;
+    score += capitalFleetScore * (academyCount > 0 && powerPlantCount >= 4 ? 26 : 10);
+    if (academyCount > 0) score += Math.max(0, heavyNavalPressure - 1) * 32;
+    if ((agent.maxAttackRange || 0) >= 3 && academyCount > 0 && powerPlantCount >= 4) score += 65;
     score -= Math.max(0, fleetDominance - 0.7) * 160;
-    if (techScore >= 8 && getCompletedBuildingCount(agent, 'naval_academy') > 0 && energyIncome >= 18) {
+    if (techScore >= 8 && academyCount > 0 && energyIncome >= 18) {
       score -= Math.max(0, lightFleetRatio - 0.52) * 240;
     }
     score += killEventScore;
@@ -3953,6 +4301,30 @@ class SelfPlayArena {
     score += agent.enemiesEliminated * 120;
     if (agent.alive) score += 200;
     score += Math.min(agent.resources, 3000) * 0.05;
+
+    // Mix in utilization-based bonus if configured (non-destructive)
+    try {
+      const rawUtil = typeof computeUtilReward === 'function' ? computeUtilReward(agent) : 0;
+      let alpha = RL_REWARD_UTIL_ALPHA;
+      if (RL_REWARD_UTIL_ANNEAL_STEPS > 0 && typeof agent.episodeStep === 'number') {
+        const t = Math.max(0, Math.min(1, agent.episodeStep / RL_REWARD_UTIL_ANNEAL_STEPS));
+        alpha = alpha * t;
+      }
+      score += Math.max(0, rawUtil) * alpha;
+    } catch (err) {
+      // ignore util mixing errors to avoid breaking scoring
+    }
+
+    // Event-usage rewards (additive, controlled by env flags)
+    try {
+      if (RL_EVENT_USE_REWARD_ENABLED) {
+        const slbmUsed = Math.max(0, Math.floor(agent.slbmFiredCount || 0));
+        const aircraftUsed = Math.max(0, Math.floor(agent.aircraftSortieCount || 0));
+        if (slbmUsed > 0) score += slbmUsed * RL_EVENT_SLBM_REWARD;
+        if (aircraftUsed > 0) score += aircraftUsed * RL_EVENT_AIRCRAFT_REWARD_PER;
+      }
+    } catch (err) {}
+
     return Math.round(score);
   }
 
@@ -4121,11 +4493,15 @@ class SelfPlayArena {
           if (destroyedBuildings > 0 && this._checkElimination(slbmTargetEnemy)) {
             agent.enemiesEliminated++;
           }
+          // record SLBM usage event for downstream reward shaping
+          agent.slbmFiredCount = Math.max(0, Math.floor(agent.slbmFiredCount || 0)) + 1;
         }
         break;
       case 'use_airstrike':
         if (targetEnemy && agent.carrierCount > 0 && agent.aircraftCount >= 10) {
-          agent.aircraftCount = 0;
+          const used = Math.min(agent.aircraftCount || 0, 10);
+          agent.aircraftCount = Math.max(0, (agent.aircraftCount || 0) - used);
+          agent.aircraftSortieCount = Math.max(0, Math.floor(agent.aircraftSortieCount || 0)) + used;
           const dmg = 720;
           targetEnemy.combatPower = Math.max(0, targetEnemy.combatPower - dmg);
           targetEnemy.totalDamageTaken += dmg;
