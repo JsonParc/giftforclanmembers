@@ -86,7 +86,8 @@ body { background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMac
             <div>에피소드: <span class="val"><span id="trainEpisode">0</span> / <span id="trainMaxEpisode">0</span></span></div>
             <div>총 학습: <span class="val" id="trainTotalEpisodes">0</span></div>
             <div>탐색 상태: <span class="val" id="trainStates">0</span></div>
-            <div>평균 보상: <span class="val" id="trainAvgReward">0</span></div>
+            <div><span id="trainAvgRewardLabel">평균 보상</span>: <span class="val" id="trainAvgReward">0</span></div>
+            <div id="trainAvgRewardHint" style="grid-column: 1 / -1; font-size: 11px; color: #8b949e;">최근 100개 기록 결과 기준</div>
             <div>탐험률(ε): <span class="val" id="trainEpsilon">0.3</span></div>
         </div>
 
@@ -233,8 +234,13 @@ async function poll() {
         document.getElementById('trainMaxEpisode').textContent = data.maxEpisodes || 0;
         document.getElementById('trainTotalEpisodes').textContent = data.stats ? data.stats.episodes : 0;
         if (data.stats) {
+            const rewardMetric = data.rewardMetric || {};
             document.getElementById('trainStates').textContent = data.stats.states || 0;
-            document.getElementById('trainAvgReward').textContent = data.stats.avgReward || 0;
+            document.getElementById('trainAvgRewardLabel').textContent = rewardMetric.label || '평균 보상';
+            document.getElementById('trainAvgReward').textContent =
+                rewardMetric.value !== undefined ? rewardMetric.value : (data.stats.avgReward || 0);
+            document.getElementById('trainAvgRewardHint').textContent =
+                rewardMetric.hint || '최근 100개 기록 결과 기준';
             document.getElementById('trainEpsilon').textContent = data.stats.epsilon || 0;
         }
         // Self-play stats section

@@ -7,7 +7,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>MW Craft</title>
-    <link rel="stylesheet" href="style.css?v=nocache_x9r7k2m">
+    <link rel="stylesheet" href="style.css?v=pixelify_en_v1">
 </head>
 <body>
     <!-- AI Training Panel (admin - outside any screen so it's always accessible) -->
@@ -129,9 +129,9 @@
                 <span class="hud-label">점수:</span>
                 <span id="score">0</span>
             </div>
-            <div id="aiAddZone" title="" style="width:28px;height:100%;cursor:default;flex-shrink:0;"></div>
+            <button id="aiAddZone" type="button" style="display:none;padding:8px 12px;border-radius:8px;border:1px solid #6f93b7;background:#1c3854;color:#d6ebff;font-weight:700;cursor:pointer;flex-shrink:0;">AI +</button>
             <button id="resetBtn" class="reset-btn" title="내 기지와 모든 데이터 초기화">내 기지 초기화</button>
-            <div id="aiRemoveZone" title="" style="width:20px;height:100%;cursor:default;flex-shrink:0;"></div>
+            <button id="aiRemoveZone" type="button" style="display:none;padding:8px 12px;border-radius:8px;border:1px solid #b77a7a;background:#4a2323;color:#ffd9d9;font-weight:700;cursor:pointer;flex-shrink:0;">AI -</button>
             <button id="logoutBtn" class="logout-btn">로그아웃</button>
             <span id="modeIndicator" style="display:none;color:#ff4444;font-weight:bold;margin-left:15px;font-size:14px;">⚔️ 공격 모드 (클릭으로 대상 지정)</span>
         </div>
@@ -267,6 +267,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.3.2/dist/pixi.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
-    <script src="game.js?v=nocache_diff_v2"></script>
+    <script src="game.js?v=pixelify_en_v1"></script>
 </body>
 </html>

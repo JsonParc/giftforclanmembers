@@ -6,6 +6,12 @@ const fs = require('fs');
 const Database = require('better-sqlite3');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const { createTrainingSessionManager } = require('./lib/server/training-session-manager');
+const { createAiConfig, createAiStrategyHelper, getAIUserId, getAIIndexFromUserId, getAIName } = require('./lib/server/ai-config');
+const { createAiLifecycleHelpers } = require('./lib/server/ai-lifecycle');
+const { createAiProductionHelpers } = require('./lib/server/ai-production');
+const { scoreShipyardUnitChoice, scoreAcademyUnitChoice } = require('./lib/server/ai-unit-scoring');
+const { createAiTargetingHelpers } = require('./lib/server/ai-targeting');
 
 const ENABLE_AI_TRAINING = true;
 const BENCHMARK_MODE = process.env.MW_BENCHMARK === '1';
@@ -27,99 +33,22 @@ const EMPTY_TRAINING_STATS = Object.freeze({
   avgReward: 0,
   totalReward: 0
 });
-// Separate training sessions for each RL-enabled difficulty; loaded lazily on first use.
-const trainingSessions = { hard: null, expert: null };
-const trainingSessionLoads = { hard: null, expert: null };
-let rlPreloadPromise = null;
-async function ensureTrainingSessionLoaded(difficulty) {
-  if (!ENABLE_AI_TRAINING || !RL_SESSION_DIFFICULTIES.includes(difficulty) || BENCHMARK_MODE || !ALLOW_RL_WEIGHT_LOADING) {
-    return null;
-  }
-  if (trainingSessions[difficulty]) {
-    return trainingSessions[difficulty];
-  }
-  if (!trainingSessionLoads[difficulty]) {
-    trainingSessionLoads[difficulty] = (async () => {
-      await aiTraining.ensureExternalWeightsCached(difficulty);
-      let session = trainingSessions[difficulty];
-      if (!session) {
-        session = new aiTraining.TrainingSession(difficulty);
-        if (!RL_WEIGHT_UPDATES_ENABLED) {
-          session.frozen = true;
-        }
-        const stateCount = Number.isFinite(session.loadedStateCount)
-          ? session.loadedStateCount
-          : Object.keys(session.qTable.table || {}).length;
-        if (!RL_WEIGHT_UPDATES_ENABLED && stateCount <= 0) {
-          throw new Error(`No usable RL states loaded for ${difficulty}`);
-        }
-        trainingSessions[difficulty] = session;
-      }
-      return session;
-    })()
-      .catch((error) => {
-        console.error(`[AI-RL][${difficulty}] Failed to initialize training session:`, error.message);
-        return null;
-      })
-      .finally(() => {
-        trainingSessionLoads[difficulty] = null;
-      });
-  }
-  return trainingSessionLoads[difficulty];
-}
-function preloadTrainingSessions() {
-  if (!ENABLE_AI_TRAINING || BENCHMARK_MODE || !RL_PRELOAD_ON_START || !ALLOW_RL_WEIGHT_LOADING) {
-    return Promise.resolve([]);
-  }
-  if (!rlPreloadPromise) {
-    rlPreloadPromise = Promise.all(
-      RL_SESSION_DIFFICULTIES.map(async (difficulty) => {
-        const session = await ensureTrainingSessionLoaded(difficulty);
-        if (!session) {
-          console.warn(`[AI-RL][${difficulty}] Session preload failed or returned null.`);
-          return null;
-        }
-        const stateCount = Object.keys(session.qTable.table || {}).length;
-        console.log(`[AI-RL][${difficulty}] Session ready for live play (${stateCount} states).`);
-        return session;
-      })
-    ).finally(() => {
-      rlPreloadPromise = null;
-    });
-  }
-  return rlPreloadPromise;
-}
-function getTrainingSession(difficulty, { create = false } = {}) {
-  if (!ENABLE_AI_TRAINING || !RL_SESSION_DIFFICULTIES.includes(difficulty) || BENCHMARK_MODE || !ALLOW_RL_WEIGHT_LOADING) {
-    return null;
-  }
-  let session = trainingSessions[difficulty];
-  if (!session && create && !trainingSessionLoads[difficulty]) {
-    void ensureTrainingSessionLoaded(difficulty);
-  }
-  return session;
-}
-function getTrainingSessionStatusSummary(difficulty) {
-  const session = getTrainingSession(difficulty);
-  if (session) {
-    return {
-      ...session.getStatus(),
-      unloaded: false
-    };
-  }
-  return {
-    difficulty,
-    isTraining: false,
-    frozen: !RL_WEIGHT_UPDATES_ENABLED,
-    currentEpisode: 0,
-    maxEpisodes: 0,
-    episodeSteps: 0,
-    stats: { ...EMPTY_TRAINING_STATS },
-    log: [],
-    unloaded: true,
-    loading: !!trainingSessionLoads[difficulty]
-  };
-}
+const {
+  ensureTrainingSessionLoaded,
+  preloadTrainingSessions,
+  getTrainingSession,
+  getTrainingSessionStatusSummary
+} = createTrainingSessionManager({
+  aiTraining,
+  enabled: ENABLE_AI_TRAINING,
+  benchmarkMode: BENCHMARK_MODE,
+  preloadOnStart: RL_PRELOAD_ON_START,
+  allowWeightLoading: ALLOW_RL_WEIGHT_LOADING,
+  weightUpdatesEnabled: RL_WEIGHT_UPDATES_ENABLED,
+  difficulties: RL_SESSION_DIFFICULTIES,
+  emptyStats: EMPTY_TRAINING_STATS
+});
+const AI_CONFIG = createAiConfig(aiTraining);
 const FALLBACK_DIFFICULTY_PRESETS = Object.freeze({
   easy: Object.freeze({
     label: '쉬움',
@@ -135,7 +64,7 @@ const FALLBACK_DIFFICULTY_PRESETS = Object.freeze({
     minShipyards: 1,
     minSilos: 0,
     minTowers: 1,
-    maxWorkers: 1
+    maxWorkers: 2
   }),
   normal: Object.freeze({
     label: '보통',
@@ -151,7 +80,7 @@ const FALLBACK_DIFFICULTY_PRESETS = Object.freeze({
     minShipyards: 1,
     minSilos: 1,
     minTowers: 2,
-    maxWorkers: 1
+    maxWorkers: 3
   }),
   hard: Object.freeze({
     label: '어려움',
@@ -167,7 +96,7 @@ const FALLBACK_DIFFICULTY_PRESETS = Object.freeze({
     minShipyards: 2,
     minSilos: 1,
     minTowers: 3,
-    maxWorkers: 1
+    maxWorkers: 4
   }),
   expert: Object.freeze({
     label: '전문가',
@@ -183,7 +112,7 @@ const FALLBACK_DIFFICULTY_PRESETS = Object.freeze({
     minShipyards: 2,
     minSilos: 2,
     minTowers: 4,
-    maxWorkers: 1
+    maxWorkers: 5
   })
 });
 const DIFFICULTY_PRESETS = (aiTraining && aiTraining.DIFFICULTY_PRESETS) || FALLBACK_DIFFICULTY_PRESETS;
@@ -231,6 +160,7 @@ const RED_ZONE_POST_BLAST_VISUAL_MS = 5000;
 const RED_ZONE_BLAST_DAMAGE = 999999;
 const RED_ZONE_BLAST_RADIUS = SLBM_DAMAGE_RADIUS;
 const RED_ZONE_ISLAND_COUNT = 5;
+const RED_ZONE_MAX_OCCUPIED_ISLANDS = 3;
 const RED_ZONE_MAX_BURSTS = 32;
 const RED_ZONE_MIN_BURSTS = 10;
 const RED_ZONE_BURST_DELAY_STEP_MS = 100;
@@ -273,15 +203,15 @@ const STARTING_MAX_POPULATION = Math.min(
 const STARTING_WORKER_COUNT = 4;
 const LEGACY_WORKER_RESOURCE_GATHERING_ENABLED = false;
 const UNIT_COMBAT_POWER_VALUES = Object.freeze({
-  destroyer: 150,
-  cruiser: 100,
-  battleship: 200,
-  carrier: 180,
-  submarine: 200,
-  frigate: 30,
-  assaultship: 100,
-  missile_launcher: 100,
-  slbm: 200
+  destroyer: 95,
+  cruiser: 260,
+  battleship: 780,
+  carrier: 560,
+  submarine: 420,
+  frigate: 38,
+  assaultship: 260,
+  missile_launcher: 520,
+  slbm: 650
 });
 const GENERAL_BUILDING_COMBAT_POWER = 120;
 const ADVANCED_BUILDING_COMBAT_POWER = 150;
@@ -292,6 +222,11 @@ const BATTLESHIP_AEGIS_DAMAGE = 7;
 const BATTLESHIP_AEGIS_RANGE_MULTIPLIER = 1.5;
 const BATTLESHIP_AEGIS_TAKEN_DAMAGE_MULTIPLIER = 1.40;
 const BATTLESHIP_AEGIS_TURRET_COOLDOWN_MS = 480;
+// Add more usernames here to allow default <-> yamato battleship skin switching.
+const YAMATO_BATTLESHIP_SKIN_ALLOWED_USERNAMES = new Set(['JsonParc']);
+// Human matches involving these accounts are excluded from live RL data collection.
+const AI_TRAINING_DATA_EXCLUDED_USERNAMES = new Set(['JsonParc']);
+const OBSERVER_LOGIN_USERNAME = 'observer';
 const CARBASE_PREREQ_BUILDINGS = Object.freeze([
   'headquarters',
   'shipyard',
@@ -300,6 +235,14 @@ const CARBASE_PREREQ_BUILDINGS = Object.freeze([
   'naval_academy',
   'missile_silo'
 ]);
+
+function isObserverUsername(username) {
+  return typeof username === 'string' && username.trim().toLowerCase() === OBSERVER_LOGIN_USERNAME;
+}
+
+function isObserverPlayer(player) {
+  return !!player?.isObserver;
+}
 
 const perfMetrics = new Map();
 let perfWindowStartedAt = Date.now();
@@ -393,7 +336,10 @@ const SQUAD_UNIT_FACING_HYSTERESIS = 0.12;
 const SQUAD_FORMATION_RETARGET_INTERVAL_MS = 220;
 const SQUAD_FORMATION_RETARGET_DISTANCE = 90;
 const SQUAD_ANCHOR_WAYPOINT_REACHED_DISTANCE = 120;
-const THREAT_SCAN_EXCLUDED_AIR_TYPES = new Set(['aircraft']);
+const THREAT_SCAN_EXCLUDED_AIR_TYPES = new Set(['aircraft', 'recon_aircraft']);
+const CARRIER_AIRCRAFT_RETURN_HP_RATIO = 0.5;
+const CARRIER_AIRCRAFT_REPAIR_DOCK_MS = 2000;
+const CARRIER_AIRCRAFT_REPAIR_HEAL_RATIO = 0.5;
 const ENABLE_SERVER_FOG_SNAPSHOTS = false;
 const DEFENSE_TOWER_CANNON_BASE_ANGLE = Math.PI / 2; // 6시 방향이 기본 총구 방향
 let nextAirstrikeId = 1;
@@ -736,13 +682,11 @@ function getCompletedOwnedBuildingCount(userId, type) {
 }
 
 function canBuildCarbaseForUser(userId) {
-  // AI players bypass strict carbase prerequisites
-  if (userId <= -1000) return true;
   return CARBASE_PREREQ_BUILDINGS.every(type => getCompletedOwnedBuildingCount(userId, type) >= 2);
 }
 
 function canAcceptPlayerOrders(unit) {
-  return !!unit && unit.type !== 'recon_aircraft';
+  return !!unit && !isAirUnitType(unit);
 }
 
 function createAssaultShipCargoPayload(unit) {
@@ -1023,6 +967,42 @@ function canUnitUseBattleshipModeCombo(unit) {
   return !!(unit && unit.type === 'battleship' && unit.battleshipModeComboUnlocked);
 }
 
+function canUsernameUseYamatoBattleshipSkin(username) {
+  return !!(username && YAMATO_BATTLESHIP_SKIN_ALLOWED_USERNAMES.has(username));
+}
+
+function canUserIdUseYamatoBattleshipSkin(userId) {
+  if (userId == null) return false;
+  const player = gameState.players.get(userId);
+  return !!(player && canUsernameUseYamatoBattleshipSkin(player.username));
+}
+
+function isExcludedFromAITrainingDataCollection(player) {
+  return !!(
+    player &&
+    !player.isAI &&
+    player.online !== false &&
+    AI_TRAINING_DATA_EXCLUDED_USERNAMES.has(player.username)
+  );
+}
+
+function shouldCollectLiveAITrainingData(state = gameState) {
+  if (!state || !state.players) return true;
+  for (const player of state.players.values()) {
+    if (isExcludedFromAITrainingDataCollection(player)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function resetPlayerRLTransitionMemory(player) {
+  if (!player) return;
+  delete player._prevRLState;
+  delete player._prevRLAction;
+  delete player._prevRLSnapshot;
+}
+
 function enforceBattleshipModeCompatibility(unit) {
   if (!unit || unit.type !== 'battleship') return;
   if (unit.combatStanceActive && unit.battleshipAegisMode && !canUnitUseBattleshipModeCombo(unit)) {
@@ -1185,6 +1165,9 @@ function initializeUnitRuntimeState(unit) {
     unit.navalLastRepathAt = Number.isFinite(unit.navalLastRepathAt) ? unit.navalLastRepathAt : 0;
   }
   if (unit.type === 'battleship') {
+    if (unit.battleshipSkinVariant !== 'yamato' && unit.battleshipSkinVariant !== 'default') {
+      unit.battleshipSkinVariant = canUserIdUseYamatoBattleshipSkin(unit.userId) ? 'yamato' : 'default';
+    }
     unit.combatStanceActive = !!unit.combatStanceActive;
     unit.combatStanceStacks = clampBattleshipCombatStanceStacks(unit);
     unit.lastBattleshipCombatAt = Number.isFinite(unit.lastBattleshipCombatAt)
@@ -1609,14 +1592,17 @@ function processBattleshipAegisAttacks(
 
   for (const damagePlan of damagePlans.values()) {
     const { target, targetType, damage } = damagePlan;
-    if (targetType === 'unit') {
-      if (!gameState.units.has(target.id)) continue;
-      applyDamageToEntity(target, damage, now);
-      recordAiUnitAttackResponse(target, unit, now);
-    } else {
-      if (!gameState.buildings.has(target.id)) continue;
-      applyDamageToEntity(target, damage, now);
-    }
+      if (targetType === 'unit') {
+        if (!gameState.units.has(target.id)) continue;
+        applyDamageToEntity(target, damage, now);
+        recordAiUnitAttackResponse(target, unit, now);
+      } else {
+        if (!gameState.buildings.has(target.id)) continue;
+        applyDamageToEntity(target, damage, now);
+        if (target.userId < 0) {
+          recordAiUnitAttackResponse(target, unit, now);
+        }
+      }
 
     if (target.hp <= 0) {
       destroyCombatTargetByUnit(unit, target, targetType);
@@ -1691,28 +1677,28 @@ const UNIT_DEFINITIONS = {
     buildTime: 4500
   },
   destroyer: {
-    cost: 150,
+    cost: 170,
     pop: 2,
-    hp: 300,
+    hp: 320,
     damage: 25,
     speed: 15,
     size: 60,
     attackRange: 1250,
     attackCooldownMs: 1000,
     visionRadius: 1000,
-    buildTime: 12000
+    buildTime: 13500
   },
   cruiser: {
-    cost: 300,
+    cost: 285,
     pop: 3,
-    hp: 500,
-    damage: 45,
+    hp: 560,
+    damage: 52,
     speed: 12,
     size: 60,
     attackRange: 2000,
     attackCooldownMs: 1300,
-    visionRadius: 1200,
-    buildTime: 22500
+    visionRadius: 1300,
+    buildTime: 20500
   },
   battleship: {
     cost: 2400,
@@ -1763,16 +1749,16 @@ const UNIT_DEFINITIONS = {
     buildTime: 45000
   },
   frigate: {
-    cost: 120,
+    cost: 135,
     pop: 1,
-    hp: 90,
-    damage: 85,
-    speed: 18,
+    hp: 85,
+    damage: 72,
+    speed: 17,
     size: 35,
     attackRange: 750,
     attackCooldownMs: 800,
     visionRadius: 900,
-    buildTime: 7500
+    buildTime: 9000
   },
   aircraft: {
     cost: 100,
@@ -1972,14 +1958,17 @@ function hasNearbyEnemyPresence(
   });
 }
 
-function hasNearbyAlliedPresence(userId, selfId, x, y, range, unitSpatialIndex, buildingSpatialIndex) {
-  const rangeSq = range * range;
+function hasNearbyAlliedPresence(userId, selfId, x, y, range, unitSpatialIndex, buildingSpatialIndex, options = {}) {
+  const selfRadius = Math.max(0, Number(options.selfRadius || 0));
+  const rangePadding = Math.max(0, Number(options.rangePadding || 0));
 
   if (unitSpatialIndex && someNearbyEntity(unitSpatialIndex, x, y, range, ally => {
     if (!ally || ally.id === selfId || ally.userId !== userId || ally.hp <= 0) return false;
     const dx = ally.x - x;
     const dy = ally.y - y;
-    return ((dx * dx) + (dy * dy)) <= rangeSq;
+    const allyRadius = Math.max(0, Number(ally.size || getUnitDefinition(ally.type).size || 0) * 0.5);
+    const effectiveRange = range + selfRadius + allyRadius + rangePadding;
+    return ((dx * dx) + (dy * dy)) <= (effectiveRange * effectiveRange);
   })) {
     return true;
   }
@@ -1989,7 +1978,9 @@ function hasNearbyAlliedPresence(userId, selfId, x, y, range, unitSpatialIndex, 
     if (!building || building.userId !== userId || building.hp <= 0) return false;
     const dx = building.x - x;
     const dy = building.y - y;
-    return ((dx * dx) + (dy * dy)) <= rangeSq;
+    const buildingRadius = Math.max(0, getBuildingCollisionSize(building.type) * 0.5);
+    const effectiveRange = range + selfRadius + buildingRadius + rangePadding;
+    return ((dx * dx) + (dy * dy)) <= (effectiveRange * effectiveRange);
   });
 }
 
@@ -2165,6 +2156,7 @@ function buildClientPlayersPayload() {
     players.push({
       userId: player.userId,
       username: player.username,
+      yamatoBattleshipSkinEligible: canUsernameUseYamatoBattleshipSkin(player.username),
       resources: player.resources,
       population: player.population,
       maxPopulation: player.maxPopulation,
@@ -2177,7 +2169,8 @@ function buildClientPlayersPayload() {
       researchedSLBM: !!player.researchedSLBM,
       missiles: player.missiles || 0,
       battleshipModeComboUnlocked: !!player.battleshipModeComboUnlocked,
-      isAI: !!player.isAI
+      isAI: !!player.isAI,
+      isObserver: !!player.isObserver
     });
   });
   return players;
@@ -2213,7 +2206,7 @@ function buildClientUnitsPayload(filterFn = null) {
     if (unit.attackMove) u.attackMove = true;
     if (unit.attackTargetId) { u.attackTargetId = unit.attackTargetId; u.attackTargetType = unit.attackTargetType; }
     if (unit.holdPosition) u.holdPosition = true;
-    if (unit.isIsolated) u.isIsolated = true;
+    u.isIsolated = !!unit.isIsolated;
     if (unit.squadId) { u.squadId = unit.squadId; u.formationType = gameState.squads.get(unit.squadId)?.formationType || 'trapezoid'; }
     // Type-specific properties
     const t = unit.type;
@@ -2223,6 +2216,7 @@ function buildClientUnitsPayload(filterFn = null) {
       u.combatStanceActive = !!unit.combatStanceActive;
       if (unit.combatStanceActive) u.combatStanceStacks = unit.combatStanceStacks ?? 0;
       u.battleshipAegisMode = !!unit.battleshipAegisMode;
+      u.battleshipSkinVariant = unit.battleshipSkinVariant === 'yamato' ? 'yamato' : 'default';
       if (unit.battleshipModeComboUnlocked) u.battleshipModeComboUnlocked = true;
     }
     if (t === 'cruiser') {
@@ -2297,7 +2291,7 @@ function buildClientBuildingsPayload(filterFn = null) {
   return buildings;
 }
 
-function sanitizeViewportState(data) {
+function sanitizeViewportState(data, options = {}) {
   if (!data || typeof data !== 'object') return null;
   const centerX = Number(data.x);
   const centerY = Number(data.y);
@@ -2306,11 +2300,13 @@ function sanitizeViewportState(data) {
   const height = Number(data.height);
   if (!Number.isFinite(centerX) || !Number.isFinite(centerY) || !Number.isFinite(zoom)) return null;
   if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  const minZoom = Number.isFinite(options.minZoom) ? options.minZoom : 0.3;
+  const maxZoom = Number.isFinite(options.maxZoom) ? options.maxZoom : 2;
 
   return {
     x: centerX,
     y: centerY,
-    zoom: Math.max(0.3, Math.min(2, zoom)),
+    zoom: Math.max(minZoom, Math.min(maxZoom, zoom)),
     width: Math.max(320, Math.min(4096, width)),
     height: Math.max(240, Math.min(2160, height)),
     revealAllBuildings: !!data.revealAllBuildings,
@@ -2345,6 +2341,13 @@ function isEntityRelevantToSocket(socket, entity, bounds) {
 }
 
 function buildClientStatePayloadForSocket(socket, sharedPlayersPayload = null) {
+  if (socket?.isObserver) {
+    return {
+      players: sharedPlayersPayload || buildClientPlayersPayload(),
+      units: buildClientUnitsPayload(),
+      buildings: buildClientBuildingsPayload()
+    };
+  }
   const bounds = getSocketInterestBounds(socket);
   const revealAllBuildings = !!socket?.viewportState?.revealAllBuildings;
   return {
@@ -2489,7 +2492,10 @@ function emitUnitDestroyedEvent(unit) {
     x: unit.x,
     y: unit.y,
     type: unit.type,
-    userId: unit.userId
+    userId: unit.userId,
+    battleshipSkinVariant: unit.type === 'battleship'
+      ? (unit.battleshipSkinVariant === 'yamato' ? 'yamato' : 'default')
+      : undefined
   }, {
     bounds: createPointBounds(unit.x, unit.y, 1100),
     userIds: [unit.userId]
@@ -2806,6 +2812,59 @@ const gameRooms = new Map();
 let gameState = null;
 let currentRoomId = null;
 let nextSlbmId = 1;
+const { ensureAIStrategyProfile } = createAiStrategyHelper(() => gameState);
+const {
+  getKnownEnemyClusterContext,
+  getSlbmTargetPriorityScore,
+  selectBestKnownEnemyTarget,
+  isWorthwhileAIAttack
+} = createAiTargetingHelpers({
+  getGameState: () => gameState,
+  normalizeCombatPowerBuildingType,
+  advancedBuildingTypes: ADVANCED_BUILDING_TYPES,
+  getUnitCombatPowerValue
+});
+const {
+  spawnAIPlayer,
+  scheduleAIRespawn,
+  clearAIRespawnTimer,
+  clearActiveWeaponsForUser,
+  removeAllAiFactionsFromCurrentRoom,
+  resetAllAiFactionsInCurrentRoom,
+  initializeAIPlayers
+} = createAiLifecycleHelpers({
+  io,
+  getGameState: () => gameState,
+  getCurrentRoomId: () => currentRoomId,
+  getGameRooms: () => gameRooms,
+  switchRoom: (roomId) => switchRoom(roomId),
+  roomHasHumanPlayers,
+  findStartPosition,
+  isOnLand,
+  findNearestLandPosition,
+  findNearestValidBuildingPosition,
+  spawnStartingWorkers,
+  ensureAIStrategyProfile,
+  getAIUserId,
+  getAIIndexFromUserId,
+  getAIName,
+  STARTING_MAX_POPULATION,
+  STARTING_WORKER_COUNT,
+  ENABLE_SERVER_FOG_SNAPSHOTS,
+  roomEmit,
+  clearCurrentRoomTransientState,
+  RED_ZONE_SELECTION_INTERVAL_MS,
+  syncSlbmId,
+  removePlayerFromCurrentRoom,
+  emitSlbmDestroyedEvent,
+  emitAirstrikeCancelledEvent,
+  AI_CONFIG
+});
+const { buildUnitForAI } = createAiProductionHelpers({
+  getGameState: () => gameState,
+  unitDefinitions: UNIT_DEFINITIONS,
+  getUnitDefinition
+});
 
 // Room-scoped emit helper
 function roomEmit(event, data) {
@@ -5733,7 +5792,8 @@ app.get('/api/map/land-cells', (req, res) => {
 let nextTempUserId = 10000;
 
 app.post('/api/login', (req, res) => {
-  const { username } = req.body;
+  const rawUsername = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+  const username = rawUsername;
   
   if (!username) {
     return res.status(400).json({ error: 'Username required' });
@@ -5751,11 +5811,17 @@ app.post('/api/login', (req, res) => {
     return res.status(403).json({ aiManageMode: true, error: 'AI Training Mode' });
   }
 
+  if (isObserverUsername(username)) {
+    const userId = nextTempUserId++;
+    const token = jwt.sign({ userId, username: OBSERVER_LOGIN_USERNAME, isObserver: true }, JWT_SECRET, { expiresIn: '1d' });
+    return res.json({ token, userId, username: OBSERVER_LOGIN_USERNAME, isObserver: true });
+  }
+
   // Assign a temporary userId (no DB persistence)
   const userId = nextTempUserId++;
   const token = jwt.sign({ userId, username }, JWT_SECRET, { expiresIn: '1d' });
   
-  res.json({ token, userId, username });
+  res.json({ token, userId, username, isObserver: false });
 });
 
 // AI Training API endpoints
@@ -5791,6 +5857,10 @@ app.post('/api/ai-training/start', async (req, res) => {
   const continuous = !!req.body.continuous;
   const mode = req.body.mode || 'solo'; // 'solo' or 'selfplay'
   const numAgents = Math.min(Math.max(parseInt(req.body.numAgents) || 4, 2), 8);
+  const requestedMinScore = Number(req.body.minScore);
+  if (Number.isFinite(requestedMinScore) && session.setRecordingPolicy) {
+    session.setRecordingPolicy({ minScore: requestedMinScore });
+  }
 
   let ok;
   if (mode === 'selfplay') {
@@ -5816,7 +5886,16 @@ app.post('/api/ai-training/start', async (req, res) => {
   }
   session.continuousMode = continuous;
   session.lastEpisodeCount = episodes;
-  res.json({ started: ok, episodes, continuous, difficulty: diff, frozen: session.frozen, mode, numAgents });
+  res.json({
+    started: ok,
+    episodes,
+    continuous,
+    difficulty: diff,
+    frozen: session.frozen,
+    mode,
+    numAgents,
+    minScore: session.recordingPolicy?.minScore
+  });
 });
 
 app.post('/api/ai-training/stop', async (req, res) => {
@@ -5868,7 +5947,7 @@ app.get('/api/ai-training/weights', async (req, res) => {
   const session = await ensureTrainingSessionLoaded(diff);
   if (!session) return res.status(503).json({ error: 'Training unavailable in benchmark mode' });
   const stats = session.qTable.getStats();
-  res.json({ ...stats, difficulty: diff, frozen: session.frozen });
+  res.json({ ...stats, difficulty: diff, frozen: session.frozen, storage: session.getStatus().storage, recording: session.getStatus().recording });
 });
 
 // Reset player game data (keeps account, resets progress) - respawn at random location
@@ -5881,6 +5960,9 @@ app.post('/api/reset', async (req, res) => {
   try {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
+    if (decoded?.isObserver) {
+      return res.status(403).json({ error: 'Observer account cannot reset game state' });
+    }
     const userId = decoded.userId;
     
     // Delete all units and buildings for this player (DB ops may fail for temp users, that's OK)
@@ -6322,6 +6404,9 @@ function checkPlayerDefeat(userId, attackerId = null, attackerNameOverride = nul
       console.warn(`checkPlayerDefeat: player ${userId} missing in room ${currentRoomId}`);
       return;
     }
+    if (defeatedPlayer.isObserver) {
+      return;
+    }
     const attackerPlayer = attackerId ? gameState.players.get(attackerId) : null;
     const defeatedName = defeatedPlayer ? defeatedPlayer.username : `Player ${userId}`;
     const attackerName = attackerPlayer
@@ -6393,6 +6478,7 @@ io.use((socket, next) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     socket.userId = decoded.userId;
     socket.username = decoded.username;
+    socket.isObserver = !!decoded.isObserver;
     // Room selection from client (default: server1)
     socket.roomId = socket.handshake.auth.roomId || 'server1';
     if (!gameRooms.has(socket.roomId)) {
@@ -6416,30 +6502,35 @@ io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.username} (${socket.userId}) to room ${socket.roomId}`);
   
   try {
+    const mapCenterX = gameState?.map?.width ? Math.round(gameState.map.width / 2) : 10000;
+    const mapCenterY = gameState?.map?.height ? Math.round(gameState.map.height / 2) : 10000;
     // Always fresh start: create player and spawn base
     gameState.players.set(socket.userId, {
       userId: socket.userId,
       username: socket.username,
-      resources: 1000,
+      resources: socket.isObserver ? 0 : 1000,
       population: 0,
-      maxPopulation: STARTING_MAX_POPULATION,
+      maxPopulation: socket.isObserver ? 0 : STARTING_MAX_POPULATION,
       combatPower: 0,
       score: 0,
       scoreFromKills: 0,
-      baseX: 0,
-      baseY: 0,
+      baseX: mapCenterX,
+      baseY: mapCenterY,
       hasBase: false,
       researchedSLBM: false,
       missiles: 0,
       battleshipModeComboUnlocked: false,
-      online: true
+      online: true,
+      isObserver: !!socket.isObserver
     });
-    if (ENABLE_SERVER_FOG_SNAPSHOTS && !gameState.fogOfWar.has(socket.userId)) {
+    if (ENABLE_SERVER_FOG_SNAPSHOTS && !gameState.fogOfWar.has(socket.userId) && !socket.isObserver) {
       gameState.fogOfWar.set(socket.userId, new Map());
     }
 
     // Check for admin mode (JsonParc)
-    if (socket.username === 'JsonParc') {
+    if (socket.isObserver) {
+      // Observer joins the room without a base or controllable entities.
+    } else if (socket.username === 'JsonParc') {
       spawnAdminBase(socket.userId);
     } else {
       spawnPlayerBase(socket.userId);
@@ -6469,7 +6560,8 @@ io.on('connection', (socket) => {
       buildings: initialState.buildings,
       missiles: player ? (player.missiles || 0) : 0,
       redZones: buildClientRedZonePayload(),
-      aiDifficulty: getEffectiveAIDifficulty(gameState.aiDifficulty)
+      aiDifficulty: getEffectiveAIDifficulty(gameState.aiDifficulty),
+      observerMode: !!socket.isObserver
     };
     
     console.log(`Sending init data: ${initData.players.length} players, ${initData.units.length} units, ${initData.buildings.length} buildings`);
@@ -6487,7 +6579,10 @@ io.on('connection', (socket) => {
   // Handle unit commands
   socket.on('viewportUpdate', (data) => {
     switchRoom(socket.roomId);
-    const viewportState = sanitizeViewportState(data);
+    const viewportState = sanitizeViewportState(data, {
+      minZoom: socket.isObserver ? 0.05 : 0.3,
+      maxZoom: socket.isObserver ? 2.4 : 2
+    });
     if (viewportState) {
       socket.viewportState = viewportState;
     }
@@ -6528,6 +6623,8 @@ io.on('connection', (socket) => {
   socket.on('attackTarget', (data) => {
     switchRoom(socket.roomId);
     const { unitIds, targetId, targetType } = data;
+    const targetUnit = targetType === 'unit' ? gameState.units.get(targetId) : null;
+    if (targetUnit && isAirUnitType(targetUnit)) return;
     // Check if any selected unit belongs to a squad — attack with entire squad
     const squadsCommanded = new Set();
     unitIds.forEach(unitId => {
@@ -6562,7 +6659,7 @@ io.on('connection', (socket) => {
     const validUnits = [];
     unitIds.forEach(uid => {
       const unit = gameState.units.get(uid);
-      if (unit && unit.userId === socket.userId && unit.hp > 0) {
+      if (unit && unit.userId === socket.userId && unit.hp > 0 && canAcceptPlayerOrders(unit)) {
         // Remove from any existing squad first
         if (unit.squadId) {
           const oldSquad = gameState.squads.get(unit.squadId);
@@ -6861,7 +6958,7 @@ io.on('connection', (socket) => {
 
   socket.on('addAI', () => {
     switchRoom(socket.roomId);
-    if (!gameState) return;
+    if (!gameState || !socket.isObserver) return;
     let newIndex = 0;
     while (gameState.players.has(getAIUserId(newIndex))) newIndex++;
     const aiPlayer = spawnAIPlayer(newIndex);
@@ -6873,7 +6970,7 @@ io.on('connection', (socket) => {
 
   socket.on('removeAI', () => {
     switchRoom(socket.roomId);
-    if (!gameState) return;
+    if (!gameState || !socket.isObserver) return;
     // Remove the AI with the highest index
     let lastAiId = null;
     gameState.players.forEach((player, userId) => {
@@ -7078,6 +7175,57 @@ io.on('connection', (socket) => {
     emitUnitCreatedEvent(reconAircraft);
   }
 
+  function launchCarrierAircraftFromStock(carrier, aircraftStock, now) {
+    if (!carrier) return null;
+    const unitConfig = getUnitDefinition('aircraft');
+    const acId = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+    const spawnPos = findNonOverlappingPosition(
+      carrier.x + (Math.random() - 0.5) * 40,
+      carrier.y + (Math.random() - 0.5) * 40,
+      unitConfig.size
+    );
+    const aircraftUnit = {
+      id: acId,
+      userId: carrier.userId,
+      type: 'aircraft',
+      x: spawnPos.x,
+      y: spawnPos.y,
+      hp: Math.max(1, Math.min(unitConfig.hp, aircraftStock?.hp ?? unitConfig.hp)),
+      maxHp: unitConfig.hp,
+      damage: unitConfig.damage,
+      speed: unitConfig.speed,
+      attackRange: unitConfig.attackRange,
+      attackCooldownMs: unitConfig.attackCooldownMs,
+      targetX: null,
+      targetY: null,
+      gatheringResourceId: null,
+      buildingType: null,
+      buildTargetX: null,
+      buildTargetY: null,
+      isDetected: false,
+      kills: 0,
+      holdPosition: true,
+      carrierId: carrier.id,
+      carrierRange: carrier.attackRange || 800
+    };
+    gameState.units.set(acId, aircraftUnit);
+    carrier.aircraftDeployed.push(acId);
+    carrier.lastAircraftDeploy = now;
+    emitUnitCreatedEvent(aircraftUnit);
+    return aircraftUnit;
+  }
+
+  function queueCarrierAircraftForRepair(carrier, aircraft, now) {
+    if (!carrier) return;
+    if (!carrier.aircraftRepairQueue) carrier.aircraftRepairQueue = [];
+    const unitConfig = getUnitDefinition('aircraft');
+    carrier.aircraftRepairQueue.push({
+      hp: Math.max(1, Math.min(unitConfig.hp, aircraft?.hp ?? unitConfig.hp)),
+      readyAt: now + CARRIER_AIRCRAFT_REPAIR_DOCK_MS,
+      autoLaunch: true
+    });
+  }
+
   socket.on('launchReconAircraft', (data) => {
     switchRoom(socket.roomId);
     const { unitId, targetX, targetY } = data;
@@ -7172,6 +7320,17 @@ io.on('connection', (socket) => {
       }
       refreshBattleshipModeState(unit);
     });
+  });
+
+  socket.on('setBattleshipSkinVariant', (data) => {
+    switchRoom(socket.roomId);
+    const { unitId, skinVariant } = data || {};
+    const unit = gameState.units.get(unitId);
+    if (!unit || unit.userId !== socket.userId || unit.type !== 'battleship') return;
+    if (skinVariant !== 'yamato' && skinVariant !== 'default') return;
+    if (skinVariant === 'yamato' && !canUsernameUseYamatoBattleshipSkin(socket.username)) return;
+    initializeUnitRuntimeState(unit);
+    unit.battleshipSkinVariant = skinVariant;
   });
 
   socket.on('toggleFrigateEngineOverdrive', (data) => {
@@ -7533,12 +7692,13 @@ io.on('connection', (socket) => {
   
   socket.on('resetAllAiFactions', () => {
     switchRoom(socket.roomId);
+    if (socket.isObserver) return;
     resetAllAiFactionsInCurrentRoom();
   });
 
   socket.on('triggerRedZoneNow', () => {
     switchRoom(socket.roomId);
-    if (!gameState || !gameState.map) return;
+    if (!gameState || !gameState.map || socket.isObserver) return;
     rollNewRedZones(Date.now());
   });
 
@@ -8137,6 +8297,57 @@ function resolveActiveSlbmImpacts(now) {
     }
 
     gameState.activeSlbms.delete(slbmId);
+  });
+}
+
+function launchCarrierAircraftFromStock(carrier, aircraftStock, now) {
+  if (!carrier) return null;
+  const unitConfig = getUnitDefinition('aircraft');
+  const acId = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+  const spawnPos = findNonOverlappingPosition(
+    carrier.x + (Math.random() - 0.5) * 40,
+    carrier.y + (Math.random() - 0.5) * 40,
+    unitConfig.size
+  );
+  const aircraftUnit = {
+    id: acId,
+    userId: carrier.userId,
+    type: 'aircraft',
+    x: spawnPos.x,
+    y: spawnPos.y,
+    hp: Math.max(1, Math.min(unitConfig.hp, aircraftStock?.hp ?? unitConfig.hp)),
+    maxHp: unitConfig.hp,
+    damage: unitConfig.damage,
+    speed: unitConfig.speed,
+    attackRange: unitConfig.attackRange,
+    attackCooldownMs: unitConfig.attackCooldownMs,
+    targetX: null,
+    targetY: null,
+    gatheringResourceId: null,
+    buildingType: null,
+    buildTargetX: null,
+    buildTargetY: null,
+    isDetected: false,
+    kills: 0,
+    holdPosition: true,
+    carrierId: carrier.id,
+    carrierRange: carrier.attackRange || 800
+  };
+  gameState.units.set(acId, aircraftUnit);
+  carrier.aircraftDeployed.push(acId);
+  carrier.lastAircraftDeploy = now;
+  emitUnitCreatedEvent(aircraftUnit);
+  return aircraftUnit;
+}
+
+function queueCarrierAircraftForRepair(carrier, aircraft, now) {
+  if (!carrier) return;
+  if (!carrier.aircraftRepairQueue) carrier.aircraftRepairQueue = [];
+  const unitConfig = getUnitDefinition('aircraft');
+  carrier.aircraftRepairQueue.push({
+    hp: Math.max(1, Math.min(unitConfig.hp, aircraft?.hp ?? unitConfig.hp)),
+    readyAt: now + CARRIER_AIRCRAFT_REPAIR_DOCK_MS,
+    autoLaunch: true
   });
 }
 
@@ -9074,6 +9285,7 @@ function updateGame(deltaTime) {
     if (!unit.aircraft) unit.aircraft = [];
     if (!unit.aircraftDeployed) unit.aircraftDeployed = [];
     if (!unit.aircraftQueue) unit.aircraftQueue = [];
+    if (!unit.aircraftRepairQueue) unit.aircraftRepairQueue = [];
     if (!unit.reconAircraft) unit.reconAircraft = [];
     if (!unit.reconAircraftDeployed) unit.reconAircraftDeployed = [];
     if (!unit.reconAircraftQueue) unit.reconAircraftQueue = [];
@@ -9115,6 +9327,28 @@ function updateGame(deltaTime) {
         }
       }
     }
+
+    if (unit.aircraftRepairQueue.length > 0) {
+      const repairedAircraft = [];
+      unit.aircraftRepairQueue = unit.aircraftRepairQueue.filter(entry => {
+        if ((entry.readyAt || 0) > now) return true;
+        const unitConfig = getUnitDefinition('aircraft');
+        const healedHp = Math.min(
+          unitConfig.hp,
+          Math.max(1, Math.round(entry.hp || 1)) + Math.ceil(unitConfig.hp * CARRIER_AIRCRAFT_REPAIR_HEAL_RATIO)
+        );
+        repairedAircraft.push({ hp: healedHp, autoLaunch: !!entry.autoLaunch });
+        return false;
+      });
+      if (repairedAircraft.length > 0) {
+        repairedAircraft.forEach(entry => {
+          unit.aircraft.push({ hp: entry.hp });
+        });
+        if (repairedAircraft.some(entry => entry.autoLaunch)) {
+          unit.deployAircraft = true;
+        }
+      }
+    }
      
     // Auto-deploy aircraft when enemies are nearby
     const enemyNearCarrier = hasNearbyEnemyPresence(
@@ -9132,36 +9366,7 @@ function updateGame(deltaTime) {
       if (!unit.lastAircraftDeploy || now - unit.lastAircraftDeploy >= 500) {
         if (unit.aircraft.length > 0) {
           const aircraftData = unit.aircraft.pop();
-          const unitConfig = getUnitDefinition('aircraft');
-          const acId = Date.now() * 1000 + Math.floor(Math.random() * 1000);
-          const spawnPos = findNonOverlappingPosition(unit.x + (Math.random() - 0.5) * 40, unit.y + (Math.random() - 0.5) * 40, 25);
-          const ac = {
-            id: acId,
-            userId: unit.userId,
-            type: 'aircraft',
-            x: spawnPos.x,
-            y: spawnPos.y,
-            hp: unitConfig.hp,
-            maxHp: unitConfig.hp,
-            damage: unitConfig.damage,
-            speed: unitConfig.speed,
-            attackRange: unitConfig.attackRange,
-            attackCooldownMs: unitConfig.attackCooldownMs,
-            targetX: null,
-            targetY: null,
-            gatheringResourceId: null,
-            buildingType: null,
-            buildTargetX: null,
-            buildTargetY: null,
-            isDetected: false,
-            kills: 0,
-            carrierId: unitId,
-            carrierRange: unit.attackRange || 800
-          };
-          gameState.units.set(acId, ac);
-          unit.aircraftDeployed.push(acId);
-          unit.lastAircraftDeploy = now;
-          emitUnitCreatedEvent(ac);
+          launchCarrierAircraftFromStock(unit, aircraftData, now);
         }
       }
       unit.deployAircraft = false;
@@ -9187,6 +9392,26 @@ function updateGame(deltaTime) {
     const dy = ac.y - carrier.y;
     const distToCarrier = Math.sqrt(dx * dx + dy * dy);
     const maxRange = ac.carrierRange || 800;
+    const repairThresholdHp = Math.ceil((ac.maxHp || getUnitDefinition('aircraft').hp) * CARRIER_AIRCRAFT_RETURN_HP_RATIO);
+
+    if (ac.hp <= repairThresholdHp) {
+      ac.returningToCarrierForRepair = true;
+      ac.attackTargetId = null;
+      ac.attackTargetType = null;
+      ac.attackMove = false;
+      ac.holdPosition = true;
+    }
+
+    if (ac.returningToCarrierForRepair) {
+      if (distToCarrier > 80) {
+        assignMoveTarget(ac, carrier.x + (Math.random() - 0.5) * 50, carrier.y + (Math.random() - 0.5) * 50);
+      } else {
+        gameState.units.delete(ac.id);
+        carrier.aircraftDeployed = carrier.aircraftDeployed.filter(id => id !== ac.id);
+        queueCarrierAircraftForRepair(carrier, ac, now);
+      }
+      return;
+    }
     
     // Check if there's an enemy in carrier range
     const hasEnemyNearby = hasNearbyEnemyPresence(
@@ -9594,14 +9819,20 @@ function updateGame(deltaTime) {
   // === Cruiser Lone Wolf passive: check isolation ===
   gameState.units.forEach((unit) => {
     if (unit.type !== 'cruiser' || unit.hp <= 0) return;
+    const cruiserDef = getUnitDefinition(unit.type);
+    const supportRange = Math.max(1200, cruiserDef.visionRadius || 0);
     unit.isIsolated = !hasNearbyAlliedPresence(
       unit.userId,
       unit.id,
       unit.x,
       unit.y,
-      1200,
+      supportRange,
       combatUnitSpatialIndex,
-      combatBuildingSpatialIndex
+      combatBuildingSpatialIndex,
+      {
+        selfRadius: Math.max(0, Number(unit.size || cruiserDef.size || 0) * 0.5),
+        rangePadding: 80
+      }
     );
   });
   
@@ -9821,8 +10052,8 @@ function updateGame(deltaTime) {
             applyDamageToEntity(target, dmg, now);
           }
           
-          // Track attackers for AI counterattack response (units only)
-          if (!targetEvaded && unit.attackTargetType === 'unit' && target.userId < 0) {
+          // Track attackers for AI counterattack response (units and buildings)
+          if (!targetEvaded && (unit.attackTargetType === 'unit' || unit.attackTargetType === 'building') && target.userId < 0) {
             recordAiUnitAttackResponse(target, unit, now);
           }
           
@@ -9933,254 +10164,6 @@ app.get('/api/rankings', (req, res) => {
 // State is cleared on disconnect
 
 // ==================== AI PLAYER SYSTEM ====================
-
-const AI_CONFIG = {
-  count: 2, // Number of AI players
-  updateInterval: 1000, // Run frequently and throttle per-difficulty inside updateAI
-  respawnDelayMs: 10000,
-  scoutInterval: 8000,
-  buildingPriority: ['power_plant', 'shipyard', 'naval_academy', 'missile_silo', 'defense_tower'],
-  unitPriority: ['worker', 'destroyer', 'cruiser', 'frigate', 'submarine', 'battleship', 'carrier'],
-  attackerTrackingDuration: 8000,
-  counterattackThreshold: 1, // React immediately to any attacker
-  priorityTargetDuration: 90000,
-  maxPriorityTargets: 20,
-  combatPower: {
-    frigate: 30,
-    destroyer: 150,
-    cruiser: 100,
-    battleship: 200,
-    carrier: 180,
-    submarine: 200,
-    assaultship: 100,
-    missile_launcher: 100
-  },
-  expansionBuildingThreshold: 8
-};
-
-function getAIUserId(aiIndex) {
-  return -1000 - aiIndex;
-}
-
-function getAIIndexFromUserId(aiUserId) {
-  if (aiUserId > -1000) return null;
-  return -1000 - aiUserId;
-}
-
-function getAIName(aiIndex) {
-  return `AI_Commander_${aiIndex + 1}`;
-}
-
-function spawnAIPlayer(aiIndex) {
-  const aiId = getAIUserId(aiIndex);
-  if (gameState.players.has(aiId)) {
-    return gameState.players.get(aiId);
-  }
-
-  const aiName = getAIName(aiIndex);
-  const startPos = findStartPosition();
-  if (!isOnLand(startPos.x, startPos.y)) {
-    const landPos = findNearestLandPosition(startPos.x, startPos.y);
-    startPos.x = landPos.x;
-    startPos.y = landPos.y;
-  }
-  const resolvedStartPos = findNearestValidBuildingPosition('headquarters', startPos.x, startPos.y);
-  if (resolvedStartPos) {
-    startPos.x = resolvedStartPos.x;
-    startPos.y = resolvedStartPos.y;
-  }
-
-  const aiPlayer = {
-    userId: aiId,
-    username: aiName,
-    resources: 1000,
-    population: 0,
-    maxPopulation: STARTING_MAX_POPULATION,
-    combatPower: 0,
-    score: 0,
-    scoreFromKills: 0,
-    baseX: startPos.x,
-    baseY: startPos.y,
-    hasBase: true,
-    researchedSLBM: false,
-    missiles: 0,
-    battleshipModeComboUnlocked: false,
-    online: true,
-    isAI: true,
-    lastScoutTime: 0,
-    lastAttackTime: 0,
-    scoutTargets: [],
-    knownEnemyBases: [],
-    recentAttackLocations: [],
-    priorityTargets: [],
-    isCounterattacking: false,
-    counterattackTarget: null
-  };
-  gameState.players.set(aiId, aiPlayer);
-  if (ENABLE_SERVER_FOG_SNAPSHOTS) {
-    gameState.fogOfWar.set(aiId, new Map());
-  }
-
-  const hqId = Date.now() * 1000 + Math.floor(Math.random() * 1000) + aiIndex * 100;
-  gameState.buildings.set(hqId, {
-    id: hqId,
-    userId: aiId,
-    type: 'headquarters',
-    x: startPos.x,
-    y: startPos.y,
-    hp: 1500,
-    maxHp: 1500,
-    buildProgress: 100
-  });
-
-  spawnStartingWorkers(aiId, startPos.x, startPos.y, STARTING_WORKER_COUNT);
-  aiPlayer.population = STARTING_WORKER_COUNT;
-
-  console.log(`AI Player ${aiName} initialized at (${startPos.x.toFixed(0)}, ${startPos.y.toFixed(0)})`);
-  return aiPlayer;
-}
-
-function scheduleAIRespawn(aiUserId) {
-  const roomId = currentRoomId;
-  const room = roomId ? gameRooms.get(roomId) : null;
-  const aiIndex = getAIIndexFromUserId(aiUserId);
-  if (!room || aiIndex == null) {
-    return;
-  }
-
-  const existingTimer = room.aiRespawnTimers.get(aiUserId);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-  }
-
-  const timer = setTimeout(() => {
-    const targetRoom = gameRooms.get(roomId);
-    if (!targetRoom) return;
-    targetRoom.aiRespawnTimers.delete(aiUserId);
-    if (!roomHasHumanPlayers(roomId)) {
-      return;
-    }
-
-    switchRoom(roomId);
-
-    const aiPlayer = spawnAIPlayer(aiIndex);
-    syncSlbmId();
-    io.to(roomId).emit('playerJoined', aiPlayer);
-    console.log(`AI ${aiPlayer.username} rejoined room ${roomId}`);
-  }, AI_CONFIG.respawnDelayMs);
-
-  room.aiRespawnTimers.set(aiUserId, timer);
-}
-
-function clearAIRespawnTimer(aiUserId) {
-  const existingTimer = gameState.aiRespawnTimers.get(aiUserId);
-  if (!existingTimer) {
-    return;
-  }
-  clearTimeout(existingTimer);
-  gameState.aiRespawnTimers.delete(aiUserId);
-}
-
-function clearActiveWeaponsForUser(userId) {
-  const slbmIdsToDelete = [];
-  gameState.activeSlbms.forEach((slbm, slbmId) => {
-    if (slbm.userId === userId) {
-      slbmIdsToDelete.push(slbmId);
-    }
-  });
-  slbmIdsToDelete.forEach(slbmId => {
-    const slbm = gameState.activeSlbms.get(slbmId);
-    gameState.activeSlbms.delete(slbmId);
-    emitSlbmDestroyedEvent({
-      id: slbmId,
-      x: slbm ? slbm.currentX : null,
-      y: slbm ? slbm.currentY : null,
-      userId: slbm ? slbm.userId : null
-    });
-  });
-
-  if (!gameState.activeAirstrikes) {
-    return;
-  }
-
-  const strikeIdsToDelete = [];
-  gameState.activeAirstrikes.forEach((strike, strikeId) => {
-    if (strike.userId === userId) {
-      strikeIdsToDelete.push(strikeId);
-    }
-  });
-  strikeIdsToDelete.forEach(strikeId => {
-    const strike = gameState.activeAirstrikes.get(strikeId);
-    gameState.activeAirstrikes.delete(strikeId);
-    emitAirstrikeCancelledEvent({
-      id: strikeId,
-      targetX: strike ? strike.targetX : null,
-      targetY: strike ? strike.targetY : null,
-      userId: strike ? strike.userId : null
-    });
-  });
-}
-
-function removeAllAiFactionsFromCurrentRoom(options = {}) {
-  if (!gameState || AI_CONFIG.count <= 0) {
-    return 0;
-  }
-
-  const { emitPlayerLeft = false } = options;
-  let removedCount = 0;
-
-  for (let aiIndex = 0; aiIndex < AI_CONFIG.count; aiIndex++) {
-    const aiUserId = getAIUserId(aiIndex);
-    clearAIRespawnTimer(aiUserId);
-    clearActiveWeaponsForUser(aiUserId);
-
-    if (gameState.players.has(aiUserId)) {
-      removePlayerFromCurrentRoom(aiUserId, { emitPlayerLeft });
-      removedCount++;
-    } else {
-      gameState.fogOfWar.delete(aiUserId);
-    }
-  }
-
-  return removedCount;
-}
-
-function resetAllAiFactionsInCurrentRoom() {
-  if (!gameState || !currentRoomId || AI_CONFIG.count <= 0) {
-    return 0;
-  }
-
-  const roomId = currentRoomId;
-  roomEmit('systemKillLog', { message: '(시스템에 의해 신속하게 처리되었습니다)' });
-  removeAllAiFactionsFromCurrentRoom({ emitPlayerLeft: true });
-
-  let respawnedCount = 0;
-  for (let aiIndex = 0; aiIndex < AI_CONFIG.count; aiIndex++) {
-    const aiPlayer = spawnAIPlayer(aiIndex);
-    if (!aiPlayer) continue;
-    respawnedCount++;
-    io.to(roomId).emit('playerJoined', aiPlayer);
-  }
-
-  syncSlbmId();
-  console.log(`Reset ${respawnedCount} AI faction(s) in room ${roomId}`);
-  return respawnedCount;
-}
-
-// Initialize AI players
-function initializeAIPlayers() {
-  let spawnedCount = 0;
-  for (let i = 0; i < AI_CONFIG.count; i++) {
-    if (gameState.players.has(getAIUserId(i))) {
-      continue;
-    }
-    const aiPlayer = spawnAIPlayer(i);
-    if (aiPlayer) {
-      spawnedCount++;
-    }
-  }
-  return spawnedCount;
-}
 
 // AI decision making
 function updateAI() {
@@ -10295,10 +10278,51 @@ function updateAI() {
     const submarineCount = unitTypeCounts.submarine || 0;
     const assaultShipCount = unitTypeCounts.assaultship || 0;
     const missileLauncherCount = unitTypeCounts.missile_launcher || 0;
+    const aiStrategy = ensureAIStrategyProfile(player);
+    const knownEnemyCount = (player.knownEnemyPositions && player.knownEnemyPositions.length) || 0;
+    const desiredWorkerCount = Math.max(
+      2,
+      Math.min(diffPreset.maxWorkers || 3, aiStrategy.desiredWorkers + Math.floor(aiBuildings.length / 6))
+    );
+    const projectedUnitCounts = { ...unitTypeCounts };
+    let projectedResources = player.resources;
+    let projectedPopulation = player.population;
+    let projectedCombatPower = currentCombatPower;
+    const canAffordProjectedUnit = (unitType) => {
+      const unitDef = getUnitDefinition(unitType);
+      return !!unitDef && projectedResources >= unitDef.cost && projectedPopulation + (unitDef.pop || 0) <= player.maxPopulation;
+    };
+    const registerProjectedUnit = (unitType) => {
+      const unitDef = getUnitDefinition(unitType);
+      if (!unitDef) return;
+      projectedResources = Math.max(0, projectedResources - unitDef.cost);
+      projectedPopulation += unitDef.pop || 0;
+      projectedUnitCounts[unitType] = (projectedUnitCounts[unitType] || 0) + 1;
+      projectedCombatPower += AI_CONFIG.combatPower[unitType] || 0;
+    };
+    const getProjectedChoiceContext = () => ({
+      strategy: aiStrategy,
+      counts: projectedUnitCounts,
+      currentCombatPower: projectedCombatPower,
+      knownEnemyCount,
+      hasNavalAcademy,
+      missileSiloCount,
+      powerPlantCount,
+      shipyardCount
+    });
+    const selectBestUnitType = (candidateTypes, scoreFn) => {
+      const scored = candidateTypes
+        .filter((unitType) => canAffordProjectedUnit(unitType))
+        .map((unitType) => ({ unitType, score: scoreFn(unitType) }))
+        .sort((a, b) => b.score - a.score);
+      if (scored.length <= 0) return null;
+      return scored[0].score > 0.05 ? scored[0].unitType : null;
+    };
     
     // Set target combat power if not set
     if (!player.targetCombatPower) {
-      player.targetCombatPower = 300 + Math.floor(Math.random() * 401); // 300-700
+      const strategyBias = aiStrategy.label === 'raider' ? 0.9 : (aiStrategy.label === 'siege' ? 1.2 : 1.0);
+      player.targetCombatPower = Math.round((420 + Math.floor(Math.random() * 361)) * strategyBias);
     }
 
     // --- RL Integration ---
@@ -10309,19 +10333,23 @@ function updateAI() {
       ? aiTraining.ACTIONS[rlActionIdx]
       : null;
 
-    // Online learning: record state/reward transitions
+    // Online learning: record state/reward transitions unless the room contains excluded accounts.
     if (ENABLE_AI_TRAINING && aiTraining) {
-      const currentState = aiTraining.encodeState(gameState, playerId);
-      if (activeSession && player._prevRLState && player._prevRLAction !== undefined) {
-        const snapshot = aiTraining.takeSnapshot(gameState, playerId);
-        const prevSnapshot = player._prevRLSnapshot || snapshot;
-        const reward = aiTraining.calculateReward(prevSnapshot, snapshot);
-        activeSession.recordTransition(player._prevRLState, player._prevRLAction, reward, currentState);
-      }
-      if (rlActionIdx !== null) {
-        player._prevRLState = currentState;
-        player._prevRLAction = rlActionIdx;
-        player._prevRLSnapshot = aiTraining.takeSnapshot(gameState, playerId);
+      if (shouldCollectLiveAITrainingData(gameState)) {
+        const currentState = aiTraining.encodeState(gameState, playerId);
+        if (activeSession && player._prevRLState && player._prevRLAction !== undefined) {
+          const snapshot = aiTraining.takeSnapshot(gameState, playerId);
+          const prevSnapshot = player._prevRLSnapshot || snapshot;
+          const reward = aiTraining.calculateReward(prevSnapshot, snapshot, player._prevRLAction);
+          activeSession.recordTransition(player._prevRLState, player._prevRLAction, reward, currentState);
+        }
+        if (rlActionIdx !== null) {
+          player._prevRLState = currentState;
+          player._prevRLAction = rlActionIdx;
+          player._prevRLSnapshot = aiTraining.takeSnapshot(gameState, playerId);
+        }
+      } else {
+        resetPlayerRLTransitionMemory(player);
       }
     }
 
@@ -10399,6 +10427,95 @@ function updateAI() {
       }
       return true;
     };
+    const tryLoadAiSubmarineSlbms = (maxLoads = Number.POSITIVE_INFINITY) => {
+      let remainingLoads = Number.isFinite(maxLoads)
+        ? Math.max(0, Math.floor(maxLoads))
+        : Number.POSITIVE_INFINITY;
+      let loadedAny = false;
+      aiSubs.forEach(sub => {
+        if (remainingLoads <= 0) return;
+        initializeUnitRuntimeState(sub);
+        if (getSubmarineLoadedSlbmCount(sub) >= SUBMARINE_SLBM_CAPACITY) return;
+        const silo = findNearestOwnedMissileSiloWithStock(playerId, sub.x, sub.y);
+        if (!silo) return;
+        silo.slbmCount = Math.max(0, getStoredSlbmCountForBuilding(silo) - 1);
+        sub.loadedSlbms = getSubmarineLoadedSlbmCount(sub) + 1;
+        roomEmit('slbmProduced', { buildingId: silo.id, count: silo.slbmCount });
+        loadedAny = true;
+        if (Number.isFinite(remainingLoads)) remainingLoads--;
+      });
+      return loadedAny;
+    };
+    const getAiSlbmFireChance = (targetContext, priorityScore, rlInitiated = false) => {
+      if (!targetContext) return 0;
+      let fireChance;
+      if (priorityScore >= 900) fireChance = 0.96;
+      else if (priorityScore >= 700) fireChance = 0.88;
+      else if (priorityScore >= 520) fireChance = 0.78;
+      else if (priorityScore >= 360) fireChance = 0.66;
+      else if (priorityScore >= 240) fireChance = 0.52;
+      else fireChance = 0.34;
+      if (targetContext.defenseTowers > 0) fireChance += 0.06;
+      if (targetContext.launcherCount > 0 || targetContext.missileSilos > 0) fireChance += 0.08;
+      if (targetContext.advancedBuildings > 0) fireChance += 0.05;
+      if (targetContext.density >= 4.5) fireChance += 0.05;
+      if (rlInitiated) fireChance = Math.max(fireChance, 0.72);
+      return Math.min(0.98, fireChance);
+    };
+    const tryFireAiSlbm = ({ rlInitiated = false } = {}) => {
+      if (!player.knownEnemyPositions || player.knownEnemyPositions.length <= 0) return false;
+      const loadedSubs = aiSubs.filter(sub => (
+        getSubmarineLoadedSlbmCount(sub) > 0
+        && now >= (sub.slbmReloadReadyAt || 0)
+      ));
+      if (loadedSubs.length <= 0) return false;
+      const targetContext = selectBestKnownEnemyTarget(player, { purpose: 'slbm', now });
+      if (!targetContext) return false;
+      const priorityScore = getSlbmTargetPriorityScore(targetContext);
+      const sparseTarget = targetContext.density < 2.2
+        && targetContext.advancedBuildings <= 0
+        && targetContext.defenseTowers <= 0
+        && targetContext.launcherCount <= 0
+        && targetContext.missileSilos <= 0;
+      if (!rlInitiated && priorityScore < 170 && sparseTarget) return false;
+      if (Math.random() >= getAiSlbmFireChance(targetContext, priorityScore, rlInitiated)) return false;
+
+      loadedSubs.sort((a, b) => getSubmarineLoadedSlbmCount(b) - getSubmarineLoadedSlbmCount(a));
+      const sub = loadedSubs[0];
+      const target = targetContext.target || player.knownEnemyPositions[0];
+      sub.loadedSlbms = Math.max(0, getSubmarineLoadedSlbmCount(sub) - 1);
+      player.missiles = Math.max(0, normalizeStoredSlbmCount(player.missiles) - 1);
+      sub.slbmReloadReadyAt = now + SUBMARINE_SLBM_RELOAD_MS;
+      sub.lastAttackTime = now;
+      sub.stealthCooldownUntil = now + SUBMARINE_STEALTH_COOLDOWN_MS;
+      sub.stealthActive = false;
+      sub.isDetected = true;
+      const clampedTarget = clampToMapBounds(target.x, target.y);
+
+      const slbmId = nextSlbmId++;
+      const slbm = {
+        id: slbmId,
+        fromX: sub.x, fromY: sub.y,
+        targetX: clampedTarget.x, targetY: clampedTarget.y,
+        currentX: sub.x, currentY: sub.y,
+        startTime: now,
+        flightTime: 5000,
+        hp: SLBM_MAX_HP, maxHp: SLBM_MAX_HP,
+        userId: playerId,
+        firingSubId: sub.id
+      };
+      gameState.activeSlbms.set(slbmId, slbm);
+
+      emitSlbmFiredEvent({
+        id: slbmId,
+        fromX: sub.x, fromY: sub.y,
+        targetX: clampedTarget.x, targetY: clampedTarget.y,
+        userId: playerId,
+        firingSubId: sub.id
+      });
+      console.log(`AI ${player.username} fired SLBM at (${target.x.toFixed(0)}, ${target.y.toFixed(0)}) [priority=${priorityScore.toFixed(1)}]`);
+      return true;
+    };
 
     // --- RL ACTION EXECUTION (hard/expert only) ---
     // RL can bias a build/production choice, but failed or non-economic actions no longer suppress the rule-based fallback.
@@ -10426,7 +10543,9 @@ function updateAI() {
           rlHandledBuild = hasMissileSilo && tryBuildWithAnyWorker('carbase', CARBASE_BUILD_COST);
           break;
         case 'produce_worker':
-          rlHandledUnit = (aiWorkers.length === 0 && headquartersId) ? tryProduceUnit('headquarters', 'worker', 50) : false;
+          rlHandledUnit = (headquartersId && aiWorkers.length < desiredWorkerCount)
+            ? tryProduceUnit('headquarters', 'worker', 50)
+            : false;
           break;
         case 'produce_frigate':
           rlHandledUnit = tryProduceUnit('shipyard', 'frigate', 120);
@@ -10447,7 +10566,7 @@ function updateAI() {
           rlHandledUnit = tryProduceUnit('naval_academy', 'submarine', SUBMARINE_COST);
           break;
         case 'produce_assaultship':
-          rlHandledUnit = tryProduceUnit('naval_academy', 'assaultship', 500);
+          rlHandledUnit = tryProduceUnit('naval_academy', 'assaultship', ASSAULT_SHIP_COST);
           break;
         case 'produce_missile_launcher':
           rlHandledUnit = tryProduceUnit('carbase', 'missile_launcher', MISSILE_LAUNCHER_COST);
@@ -10455,28 +10574,31 @@ function updateAI() {
         case 'produce_slbm':
           rlHandledUnit = tryQueueSlbm();
           break;
+        case 'load_submarine_slbm':
+          rlHandledUnit = tryLoadAiSubmarineSlbms(1);
+          break;
+        case 'use_slbm':
+          if (!aiSubs.some(sub => getSubmarineLoadedSlbmCount(sub) > 0)) {
+            tryLoadAiSubmarineSlbms(1);
+          }
+          rlHandledUnit = tryFireAiSlbm({ rlInitiated: true });
+          break;
         case 'attack_nearest_enemy':
         case 'attack_strongest_enemy':
           if (player.knownEnemyPositions && player.knownEnemyPositions.length > 0) {
-            let target;
-            if (rlAction === 'attack_strongest_enemy') {
-              const sorted = player.knownEnemyPositions.slice().sort((a, b) => (b.lastSeenStrength || 0) - (a.lastSeenStrength || 0));
-              target = sorted[0];
-            } else {
-              let nearest = null;
-              let nearestDist = Infinity;
-              for (const pos of player.knownEnemyPositions) {
-                const dx = pos.x - player.baseX;
-                const dy = pos.y - player.baseY;
-                const d = dx * dx + dy * dy;
-                if (d < nearestDist) {
-                  nearestDist = d;
-                  nearest = pos;
-                }
-              }
-              target = nearest;
+            const targetContext = selectBestKnownEnemyTarget(player, {
+              mode: rlAction === 'attack_strongest_enemy' ? 'strongest' : 'nearest',
+              purpose: 'attack',
+              now
+            });
+            if (targetContext) {
+              player.targetCombatPower = Math.max(
+                player.targetCombatPower || 0,
+                Math.round(targetContext.resistance * 1.08)
+              );
             }
-            if (target) {
+            if (targetContext && isWorthwhileAIAttack(currentCombatPower, targetContext)) {
+              const target = targetContext.target;
               aiCombatUnits.forEach(unit => {
                 if (!unit.attackTargetId) assignMoveTarget(unit, target.x, target.y);
               });
@@ -10503,28 +10625,46 @@ function updateAI() {
 
     if (aiWorkers.length > 0) {
       const idleWorkers = getIdleWorkers();
-      const earlyFleetPhase = aiCombatUnits.length < 3;
+      const earlyFleetPhase = aiCombatUnits.length < Math.max(3, aiStrategy.academyUnlockUnits);
+      const academyTimingReady = aiCombatUnits.length >= aiStrategy.academyUnlockUnits
+        || (powerPlantCount >= 3 && shipyardCount >= 1);
       const desiredPowerPlants = earlyFleetPhase
-        ? Math.min(2, diffPreset.minPowerPlants || 2)
-        : Math.min(diffPreset.minPowerPlants || 3, 2 + Math.floor(aiBuildings.length / 4));
+        ? Math.max(2, Math.min(diffPreset.minPowerPlants || 2, aiStrategy.earlyPowerPlants))
+        : Math.min(
+          (diffPreset.minPowerPlants || 3)
+            + 1
+            + (aiStrategy.earlyPowerPlants >= 4 ? 1 : 0)
+            + (navalAcademyCount > 0 ? 1 : 0),
+          5 + Math.floor(aiBuildings.length / 4)
+        );
       const desiredShipyards = hasNavalAcademy
-        ? Math.min(diffPreset.minShipyards || 2, 2)
-        : 1;
-      const desiredNavalAcademies = aiCombatUnits.length >= 4
-        ? Math.min(2, Math.max(1, Math.floor(aiCombatUnits.length / 8)))
+        ? Math.min((diffPreset.minShipyards || 2) + (player.aiStrategyId === 'raider' ? 1 : 0), 3)
+        : (powerPlantCount >= Math.max(2, aiStrategy.earlyPowerPlants - 1) ? 2 : 1);
+      const desiredNavalAcademies = (academyTimingReady || powerPlantCount >= 3 || shipyardCount >= 2)
+        ? Math.min(3, Math.max(1, 1 + Math.floor(aiCombatUnits.length / 9) + (powerPlantCount >= 5 ? 1 : 0)))
         : 0;
-      const desiredSilos = aiCombatUnits.length >= 10
-        ? Math.min(diffPreset.minSilos || 1, 1 + Math.floor(aiCombatUnits.length / 12))
+      const desiredSilos = aiCombatUnits.length >= aiStrategy.siloUnlockUnits
+        ? Math.min(3, Math.max(0, (diffPreset.minSilos || 0) + (aiStrategy.siloBias > 1 ? 1 : 0) + (knownEnemyCount > 0 ? 1 : 0)))
         : 0;
-      const desiredTowers = aiBuildings.length >= 4
-        ? Math.min(diffPreset.minTowers || 2, 1 + Math.floor(aiBuildings.length / 5))
+      const desiredTowers = aiBuildings.length >= 2
+        ? Math.min(
+          (diffPreset.minTowers || 2)
+            + (player.aiStrategyId === 'siege' ? 2 : 0)
+            + (knownEnemyCount > 0 ? 2 : 0)
+            + (currentCombatPower >= 500 ? 1 : 0)
+            + (powerPlantCount >= 4 ? 1 : 0)
+            + (navalAcademyCount > 0 ? 1 : 0),
+          5 + Math.floor(aiBuildings.length / 3)
+        )
+        : (powerPlantCount >= 2 ? (knownEnemyCount > 0 ? 2 : 1) : 0);
+      const desiredCarbases = missileSiloCount >= 1 && aiCombatUnits.length >= aiStrategy.carbaseUnlockUnits
+        ? Math.min(3, 1 + (aiStrategy.carbaseBias > 1 ? 1 : 0) + (knownEnemyCount > 0 ? 1 : 0))
         : 0;
-      const desiredCarbases = missileSiloCount >= 1 && aiCombatUnits.length >= 12 ? 1 : 0;
-      const maxConcurrentBuilds = Math.max(1, Math.min(2, Math.floor(aiWorkers.length / 3) || 1));
+      const maxConcurrentBuilds = Math.max(1, Math.min(3, Math.ceil(aiWorkers.length / 2) || 1));
       const canStartAnotherStructure = pendingStructureCount < maxConcurrentBuilds;
 
       if (!rlHandledBuild && canStartAnotherStructure && idleWorkers.length > 0) {
-        const reserveForUnits = hasNavalAcademy ? 500 : (hasShipyard ? 150 : 0);
+        const reserveForUnits = hasNavalAcademy ? 350 : (hasShipyard ? 120 : 0);
         let buildType = null;
         let buildCost = 0;
 
@@ -10534,15 +10674,29 @@ function updateAI() {
         } else if (!hasShipyard && player.resources >= 200) {
           buildType = 'shipyard';
           buildCost = 200;
+        } else if (!hasNavalAcademy && academyTimingReady && player.resources - 300 >= 120) {
+          buildType = 'naval_academy';
+          buildCost = 300;
         } else if (earlyFleetPhase) {
           if (powerPlantCount < desiredPowerPlants && player.resources - 150 >= 120) {
             buildType = 'power_plant';
             buildCost = 150;
+          } else if (
+            defenseCount < Math.min(2, desiredTowers)
+            && powerPlantCount >= 2
+            && (knownEnemyCount > 0 || aiCombatUnits.length >= 2)
+            && player.resources - 250 >= 120
+          ) {
+            buildType = 'defense_tower';
+            buildCost = 250;
+          } else if (shipyardCount < desiredShipyards && powerPlantCount >= 2 && player.resources - 200 >= 120) {
+            buildType = 'shipyard';
+            buildCost = 200;
           } else if (defenseCount < 1 && aiCombatUnits.length >= 1 && player.resources - 250 >= 120) {
             buildType = 'defense_tower';
             buildCost = 250;
           }
-        } else if (!hasNavalAcademy && player.resources - 300 >= 150) {
+        } else if (!hasNavalAcademy && powerPlantCount >= 3 && player.resources - 300 >= 150) {
           buildType = 'naval_academy';
           buildCost = 300;
         } else if (powerPlantCount < desiredPowerPlants && player.resources - 150 >= reserveForUnits) {
@@ -10572,9 +10726,9 @@ function updateAI() {
     }
     
     // --- DEVELOPMENT: Build units ---
-    // Only backfill workers if all died (keep at least 1)
+    // Keep a small worker corps alive so AI can tech and recover.
     if (
-      aiWorkers.length === 0 &&
+      aiWorkers.length < desiredWorkerCount &&
       headquartersId &&
       player.resources >= 50 &&
       player.population < player.maxPopulation
@@ -10595,18 +10749,12 @@ function updateAI() {
           ) {
             return;
           }
-          if (player.population + 1 > player.maxPopulation) return;
-
-          if (frigateCount < 2 && player.resources >= 120) {
-            buildUnitForAI(playerId, b.id, 'frigate');
-          } else if (destroyerCount < Math.max(2, shipyardCount) && player.resources >= 150) {
-            buildUnitForAI(playerId, b.id, 'destroyer');
-          } else if (cruiserCount < Math.max(1, Math.floor((frigateCount + destroyerCount) / 3)) && player.resources >= 300) {
-            buildUnitForAI(playerId, b.id, 'cruiser');
-          } else if (destroyerCount <= frigateCount && player.resources >= 150) {
-            buildUnitForAI(playerId, b.id, 'destroyer');
-          } else if (player.resources >= 120) {
-            buildUnitForAI(playerId, b.id, 'frigate');
+          const choice = selectBestUnitType(
+            ['frigate', 'destroyer', 'cruiser'],
+            (unitType) => scoreShipyardUnitChoice(unitType, getProjectedChoiceContext())
+          );
+          if (choice && buildUnitForAI(playerId, b.id, choice)) {
+            registerProjectedUnit(choice);
           }
         });
       }
@@ -10622,22 +10770,22 @@ function updateAI() {
           ) {
             return;
           }
-          if (player.population + getUnitDefinition('submarine').pop > player.maxPopulation) return;
-
-          if (submarineCount < Math.max(1, Math.min(2, shipyardCount - 1)) && player.resources >= SUBMARINE_COST) {
-            buildUnitForAI(playerId, b.id, 'submarine');
-          } else if (carrierCount < 1 && aiCombatUnits.length >= 6 && player.resources >= CARRIER_COST) {
-            buildUnitForAI(playerId, b.id, 'carrier');
-          } else if (assaultShipCount < 1 && aiCombatUnits.length >= 8 && player.resources >= 500) {
-            buildUnitForAI(playerId, b.id, 'assaultship');
-          } else if (battleshipCount < Math.max(1, Math.floor(aiCombatUnits.length / 12)) && player.resources >= BATTLESHIP_COST) {
-            buildUnitForAI(playerId, b.id, 'battleship');
+          const choice = selectBestUnitType(
+            ['submarine', 'carrier', 'assaultship', 'battleship'],
+            (unitType) => scoreAcademyUnitChoice(unitType, getProjectedChoiceContext())
+          );
+          if (choice && buildUnitForAI(playerId, b.id, choice)) {
+            registerProjectedUnit(choice);
           }
         });
       }
       
       // --- AI CARBASE: Produce missile launchers ---
-      if (carbaseCount > 0 && missileLauncherCount < Math.max(1, missileSiloCount)) {
+      const desiredLaunchers = Math.max(
+        missileSiloCount + (knownEnemyCount > 0 ? 1 : 0),
+        player.aiStrategyId === 'siege' ? 3 : 2
+      );
+      if (carbaseCount > 0 && (projectedUnitCounts.missile_launcher || 0) < desiredLaunchers) {
         gameState.buildings.forEach(b => {
           if (
             b.userId !== playerId ||
@@ -10647,9 +10795,11 @@ function updateAI() {
           ) {
             return;
           }
-          if (player.population + getUnitDefinition('missile_launcher').pop > player.maxPopulation) return;
-          if (player.resources >= MISSILE_LAUNCHER_COST) {
-            buildUnitForAI(playerId, b.id, 'missile_launcher');
+          if (canAffordProjectedUnit('missile_launcher') && player.resources >= MISSILE_LAUNCHER_COST) {
+            const built = buildUnitForAI(playerId, b.id, 'missile_launcher');
+            if (built) {
+              registerProjectedUnit('missile_launcher');
+            }
           }
         });
       }
@@ -10761,11 +10911,18 @@ function updateAI() {
 
     // Always update targetCombatPower dynamically
     if (!player.targetCombatPower || currentCombatPower >= player.targetCombatPower) {
-      player.targetCombatPower = Math.max(80, currentCombatPower + 50 + Math.floor(Math.random() * 100));
+      const macroReserve = (powerPlantCount * 28)
+        + (navalAcademyCount * 70)
+        + (defenseCount * 20)
+        + (carbaseCount * 30)
+        + (missileSiloCount * 24);
+      player.targetCombatPower = Math.max(220, currentCombatPower + 160 + Math.floor(Math.random() * 220) + Math.floor(macroReserve * 0.2));
     }
     
     // --- AI SLBM ---
-    if (hasMissileSilo && player.resources >= 1500 && (!player.missiles || player.missiles < 3)) {
+    const aiSubs = aiCombatUnits.filter(u => u.type === 'submarine');
+    const desiredStoredMissiles = Math.max(3, (aiSubs.length * 2) + (knownEnemyCount > 0 ? 1 : 0));
+    if (hasMissileSilo && player.resources >= 1500 && (!player.missiles || player.missiles < desiredStoredMissiles)) {
       const silo = gameState.buildings.get(missileSiloId);
       if (silo) {
         if (!silo.missileQueue) silo.missileQueue = [];
@@ -10791,61 +10948,9 @@ function updateAI() {
       }
     }
     
-    // AI loads stored SLBMs onto empty submarines, then fires when ready.
-    const aiSubs = aiCombatUnits.filter(u => u.type === 'submarine');
-    aiSubs.forEach(sub => {
-      initializeUnitRuntimeState(sub);
-      if (getSubmarineLoadedSlbmCount(sub) >= SUBMARINE_SLBM_CAPACITY) return;
-      const silo = findNearestOwnedMissileSiloWithStock(playerId, sub.x, sub.y);
-      if (!silo) return;
-      silo.slbmCount = Math.max(0, getStoredSlbmCountForBuilding(silo) - 1);
-      sub.loadedSlbms = getSubmarineLoadedSlbmCount(sub) + 1;
-      roomEmit('slbmProduced', { buildingId: silo.id, count: silo.slbmCount });
-    });
-
-    if (player.missiles > 0 && player.knownEnemyPositions && player.knownEnemyPositions.length > 0) {
-      const loadedSubs = aiSubs.filter(sub => (
-        getSubmarineLoadedSlbmCount(sub) > 0
-        && now >= (sub.slbmReloadReadyAt || 0)
-      ));
-      if (loadedSubs.length > 0 && Math.random() < 0.3) {
-        const sub = loadedSubs[0];
-        // Target the strongest known enemy position (most units seen nearby)
-        const sortedTargets = player.knownEnemyPositions.slice().sort((a, b) => (b.lastSeenStrength || 0) - (a.lastSeenStrength || 0));
-        const target = sortedTargets[0] || player.knownEnemyPositions[0];
-        sub.loadedSlbms = Math.max(0, getSubmarineLoadedSlbmCount(sub) - 1);
-        player.missiles = Math.max(0, normalizeStoredSlbmCount(player.missiles) - 1);
-        sub.slbmReloadReadyAt = now + SUBMARINE_SLBM_RELOAD_MS;
-        sub.lastAttackTime = now;
-        sub.stealthCooldownUntil = now + SUBMARINE_STEALTH_COOLDOWN_MS;
-        sub.stealthActive = false;
-        sub.isDetected = true;
-        const clampedTarget = clampToMapBounds(target.x, target.y);
-        
-        const slbmId = nextSlbmId++;
-        const slbm = {
-          id: slbmId,
-          fromX: sub.x, fromY: sub.y,
-          targetX: clampedTarget.x, targetY: clampedTarget.y,
-          currentX: sub.x, currentY: sub.y,
-          startTime: now,
-          flightTime: 5000,
-          hp: SLBM_MAX_HP, maxHp: SLBM_MAX_HP,
-          userId: playerId,
-          firingSubId: sub.id
-        };
-        gameState.activeSlbms.set(slbmId, slbm);
-        
-        emitSlbmFiredEvent({
-          id: slbmId,
-          fromX: sub.x, fromY: sub.y,
-          targetX: clampedTarget.x, targetY: clampedTarget.y,
-          userId: playerId,
-          firingSubId: sub.id
-        });
-        console.log(`AI ${player.username} fired SLBM at (${target.x.toFixed(0)}, ${target.y.toFixed(0)})`);
-      }
-    }
+    // AI keeps submarines loaded and fires aggressively into dense or fortified enemy clusters.
+    tryLoadAiSubmarineSlbms();
+    tryFireAiSlbm();
     
     // --- AI CARRIER: Produce and deploy aircraft ---
     const aiCarriers = aiCombatUnits.filter(u => u.type === 'carrier');
@@ -11351,16 +11456,43 @@ function updateAI() {
     // Priority targets take precedence over regular attacks
     if (!player.lastAttackTime) player.lastAttackTime = 0;
     
-    const canAttack = currentCombatPower >= Math.min(player.targetCombatPower * 0.4, 60);
+    const plannedAttackTarget = !player.isCounterattacking
+      ? selectBestKnownEnemyTarget(player, { purpose: 'attack', mode: 'balanced', now })
+      : null;
+    const fortifiedTargetRatio = plannedAttackTarget
+      ? (1.08
+        + (plannedAttackTarget.defenseTowers > 0 ? 0.08 : 0)
+        + (plannedAttackTarget.launcherCount > 0 ? 0.1 : 0)
+        + (plannedAttackTarget.capitalShips > 0 ? 0.05 : 0))
+      : 1.0;
+    const canAttack = currentCombatPower >= Math.max(
+      player.targetCombatPower * 0.82,
+      defenseCount <= 0 ? 360 : 300,
+      plannedAttackTarget ? (plannedAttackTarget.resistance * fortifiedTargetRatio) : 0
+    );
     const hasPriorityTargets = player.priorityTargets && player.priorityTargets.length > 0;
     const hasTargets = (player.knownEnemyPositions && player.knownEnemyPositions.length > 0) || hasPriorityTargets;
-    const attackCooldown = now - player.lastAttackTime > 8000; // 8s cooldown (was 20s)
+    const attackCooldown = now - player.lastAttackTime > 10000;
     const counterattackCooldown = now - player.lastAttackTime > 2000; // near-instant counterattack
     
     // Counterattack with priority targets (immediate, less strict requirements)
     if (player.isCounterattacking && player.counterattackTarget && counterattackCooldown && aiCombatUnits.length >= 1) {
       player.lastAttackTime = now;
       const target = player.counterattackTarget;
+      const counterattackContext = getKnownEnemyClusterContext(target) || {
+        target,
+        resistance: Math.max(220, currentCombatPower * 0.85),
+        value: 180
+      };
+      if (!isWorthwhileAIAttack(currentCombatPower, counterattackContext, { counterattack: true })) {
+        aiCombatUnits.forEach(unit => {
+          if (!unit.attackTargetId) {
+            assignMoveTarget(unit, player.baseX + (Math.random() - 0.5) * 260, player.baseY + (Math.random() - 0.5) * 260);
+          }
+        });
+        player.isCounterattacking = false;
+        player.counterattackTarget = null;
+      } else {
       
       console.log(`AI ${player.username} counterattacking at (${target.x.toFixed(0)}, ${target.y.toFixed(0)}) with ${aiCombatUnits.length} units (COUNTERATTACK)`);
       
@@ -11404,57 +11536,60 @@ function updateAI() {
           unit.attackTargetType = nearestTarget.type;
         }
       });
+      }
     } else if (canAttack && hasTargets && attackCooldown && aiCombatUnits.length >= 1 && !player.isCounterattacking) {
       // Normal attack behavior (when not counterattacking)
-      player.lastAttackTime = now;
+      const targetContext = plannedAttackTarget || selectBestKnownEnemyTarget(player, { purpose: 'attack', mode: 'balanced', now });
+      const target = targetContext?.target;
+      if (!target) {
+        player.lastAttackTime = 0;
+      } else {
+        player.lastAttackTime = now;
       
-      // Pick a target position (preferring most recent discovery)
-      const sortedTargets = [...player.knownEnemyPositions].sort((a, b) => b.discoveredAt - a.discoveredAt);
-      const target = sortedTargets[0];
+        console.log(`AI ${player.username} attacking at (${target.x.toFixed(0)}, ${target.y.toFixed(0)}) with ${aiCombatUnits.length} units (power: ${currentCombatPower})`);
       
-      console.log(`AI ${player.username} attacking at (${target.x.toFixed(0)}, ${target.y.toFixed(0)}) with ${aiCombatUnits.length} units (power: ${currentCombatPower})`);
-      
-      // Send ALL idle combat units to the attack position
-      aiCombatUnits.forEach(unit => {
-        // Send to attack position with attack-move
-        assignMoveTarget(unit, target.x, target.y);
-        unit.attackMove = true;
+        // Send ALL idle combat units to the attack position
+        aiCombatUnits.forEach(unit => {
+          // Send to attack position with attack-move
+          assignMoveTarget(unit, target.x, target.y);
+          unit.attackMove = true;
         
-        // Find nearest enemy entity at target area to focus fire
-        let nearestTarget = null;
-        let nearestDist = Infinity;
+          // Find nearest enemy entity at target area to focus fire
+          let nearestTarget = null;
+          let nearestDist = Infinity;
         
-        gameState.buildings.forEach(building => {
-          if (building.userId === target.playerId) {
-            const dx = building.x - target.x;
-            const dy = building.y - target.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < 2000 && dist < nearestDist) {
-              nearestDist = dist;
-              nearestTarget = { id: building.id, type: 'building' };
-            }
-          }
-        });
-        
-        if (!nearestTarget) {
-          gameState.units.forEach(enemyUnit => {
-            if (enemyUnit.userId === target.playerId) {
-              const dx = enemyUnit.x - target.x;
-              const dy = enemyUnit.y - target.y;
+          gameState.buildings.forEach(building => {
+            if (building.userId === target.playerId) {
+              const dx = building.x - target.x;
+              const dy = building.y - target.y;
               const dist = Math.sqrt(dx * dx + dy * dy);
               if (dist < 2000 && dist < nearestDist) {
                 nearestDist = dist;
-                nearestTarget = { id: enemyUnit.id, type: 'unit' };
+                nearestTarget = { id: building.id, type: 'building' };
               }
             }
           });
-        }
         
-        if (nearestTarget) {
-          unit.attackTargetId = nearestTarget.id;
-          unit.attackTargetType = nearestTarget.type;
-        }
-      });
+          if (!nearestTarget) {
+            gameState.units.forEach(enemyUnit => {
+              if (enemyUnit.userId === target.playerId) {
+                const dx = enemyUnit.x - target.x;
+                const dy = enemyUnit.y - target.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < 2000 && dist < nearestDist) {
+                  nearestDist = dist;
+                  nearestTarget = { id: enemyUnit.id, type: 'unit' };
+                }
+              }
+            });
+          }
+        
+          if (nearestTarget) {
+            unit.attackTargetId = nearestTarget.id;
+            unit.attackTargetType = nearestTarget.type;
+          }
+        });
+      }
     }
     
     // --- BASE EXPANSION: when 8+ buildings on main island OR no space left, expand ---
@@ -11972,14 +12107,14 @@ function getHumanUsersOnRedZoneIslands(zones) {
     gameState.buildings.forEach(building => {
       if (zoneUsers.has(building.userId)) return;
       const owner = gameState.players.get(building.userId);
-      if (!owner || owner.isAI || owner.online === false) return;
+      if (!owner || owner.isAI || owner.isObserver || owner.online === false) return;
       if (!islandContainsWorldPoint(zone, building.x, building.y)) return;
       zoneUsers.add(building.userId);
     });
     gameState.units.forEach(unit => {
       if (zoneUsers.has(unit.userId)) return;
       const owner = gameState.players.get(unit.userId);
-      if (!owner || owner.isAI || owner.online === false) return;
+      if (!owner || owner.isAI || owner.isObserver || owner.online === false) return;
       if (!islandContainsWorldPoint(zone, unit.x, unit.y)) return;
       zoneUsers.add(unit.userId);
     });
@@ -12033,6 +12168,63 @@ function createRedZoneEntry(island, now) {
   };
 }
 
+function getNearestIslandForPoint(islands, x, y, maxDistSq = 2500 * 2500) {
+  let bestDist = Infinity;
+  let bestIsland = null;
+  islands.forEach(island => {
+    const dx = x - island.x;
+    const dy = y - island.y;
+    const distSq = (dx * dx) + (dy * dy);
+    if (distSq < bestDist) {
+      bestDist = distSq;
+      bestIsland = island;
+    }
+  });
+  if (!bestIsland || bestDist > maxDistSq) return null;
+  return bestIsland;
+}
+
+function buildRedZoneIslandOccupantMap(islands) {
+  const islandOccupants = new Map();
+  gameState.buildings.forEach(building => {
+    const owner = gameState.players.get(building.userId);
+    if (!owner || owner.online === false || owner.isObserver) return;
+    const island = getNearestIslandForPoint(islands, building.x, building.y);
+    if (!island) return;
+    if (!islandOccupants.has(island.id)) islandOccupants.set(island.id, new Set());
+    islandOccupants.get(island.id).add(building.userId);
+  });
+  return islandOccupants;
+}
+
+function selectBalancedOccupiedRedZoneIslands(occupiedCandidates, islandOccupants, desiredCount) {
+  const pool = occupiedCandidates.slice();
+  const selected = [];
+  const ownerCounts = new Map();
+
+  while (selected.length < desiredCount && pool.length > 0) {
+    let bestLoad = Infinity;
+    const scored = pool.map(island => {
+      const owners = [...(islandOccupants.get(island.id) || [])];
+      const load = owners.reduce((minLoad, userId) => (
+        Math.min(minLoad, ownerCounts.get(userId) || 0)
+      ), Infinity);
+      if (load < bestLoad) bestLoad = load;
+      return { island, owners, load };
+    });
+
+    const eligible = scored.filter(entry => entry.load === bestLoad);
+    const picked = eligible[Math.floor(Math.random() * eligible.length)];
+    const candidateOwners = picked.owners.filter(userId => (ownerCounts.get(userId) || 0) === picked.load);
+    const assignedOwner = candidateOwners[Math.floor(Math.random() * candidateOwners.length)];
+    ownerCounts.set(assignedOwner, (ownerCounts.get(assignedOwner) || 0) + 1);
+    selected.push(picked.island);
+    pool.splice(pool.indexOf(picked.island), 1);
+  }
+
+  return selected;
+}
+
 function rollNewRedZones(now) {
   const islands = getIslandCenters();
   // Dynamic interval: more entities alive → faster red zone cycles (min 60s, default 600s)
@@ -12055,32 +12247,33 @@ function rollNewRedZones(now) {
     shuffled[swapIndex] = temp;
   }
 
-  // Find islands occupied by human (non-AI) players
-  const humanIslandIds = new Set();
-  gameState.buildings.forEach(b => {
-    const p = gameState.players.get(b.userId);
-    if (!p || p.isAI) return;
-    let bestDist = Infinity;
-    let bestIsland = null;
-    islands.forEach(isl => {
-      const dx = b.x - isl.x; const dy = b.y - isl.y;
-      const d = dx * dx + dy * dy;
-      if (d < bestDist) { bestDist = d; bestIsland = isl; }
-    });
-    if (bestIsland && bestDist < 2500 * 2500) humanIslandIds.add(bestIsland.id);
-  });
+  const islandOccupants = buildRedZoneIslandOccupantMap(islands);
+  const occupiedIslands = shuffled.filter(island => (islandOccupants.get(island.id)?.size || 0) > 0);
+  const unoccupiedIslands = shuffled.filter(island => (islandOccupants.get(island.id)?.size || 0) <= 0);
 
-  let selected;
-  const humanIslands = shuffled.filter(i => humanIslandIds.has(i.id));
-  const otherIslands = shuffled.filter(i => !humanIslandIds.has(i.id));
-  if (humanIslands.length > 0) {
-    // Force at least 1 random human island, fill remaining slots from the rest
-    const forced = humanIslands[Math.floor(Math.random() * humanIslands.length)];
-    const rest = [...humanIslands.filter(x => x !== forced), ...otherIslands];
-    selected = [forced, ...rest].slice(0, Math.min(RED_ZONE_ISLAND_COUNT, islands.length));
-  } else {
-    selected = shuffled.slice(0, Math.min(RED_ZONE_ISLAND_COUNT, shuffled.length));
+  const maxSelectionCount = Math.min(RED_ZONE_ISLAND_COUNT, islands.length);
+  const maxOccupiedCount = Math.min(RED_ZONE_MAX_OCCUPIED_ISLANDS, maxSelectionCount, occupiedIslands.length);
+  const desiredOccupiedCount = maxOccupiedCount > 0
+    ? (1 + Math.floor(Math.random() * maxOccupiedCount))
+    : 0;
+  const selected = [];
+  const selectedIds = new Set();
+
+  if (desiredOccupiedCount > 0) {
+    const occupiedPool = occupiedIslands.filter(island => !selectedIds.has(island.id));
+    const balancedOccupied = selectBalancedOccupiedRedZoneIslands(occupiedPool, islandOccupants, desiredOccupiedCount);
+    balancedOccupied.forEach(island => {
+      selected.push(island);
+      selectedIds.add(island.id);
+    });
   }
+
+  const fillPool = [...unoccupiedIslands, ...occupiedIslands.filter(island => !selectedIds.has(island.id))];
+  for (let i = 0; i < fillPool.length && selected.length < maxSelectionCount; i++) {
+    selected.push(fillPool[i]);
+    selectedIds.add(fillPool[i].id);
+  }
+
   gameState.activeRedZones = selected.map(island => createRedZoneEntry(island, now));
   emitRedZoneSync();
   emitRedZoneActivationAlert();
@@ -12258,48 +12451,6 @@ function getIslandCenters() {
   
   gameState._islandCenters = islands;
   return islands;
-}
-
-// Build unit for AI (uses production queue like players)
-function buildUnitForAI(userId, buildingId, unitType) {
-  const building = gameState.buildings.get(buildingId);
-  const player = gameState.players.get(userId);
-  
-  if (!building || building.userId !== userId || !player) return false;
-  if (!Object.prototype.hasOwnProperty.call(UNIT_DEFINITIONS, unitType)) return false;
-  if (building.buildProgress < 100) return false;
-
-  // Building type restrictions for AI
-  if (unitType === 'worker' && building.type !== 'headquarters') return false;
-  if ((unitType === 'destroyer' || unitType === 'cruiser' || unitType === 'frigate') && building.type !== 'shipyard') return false;
-  if ((unitType === 'battleship' || unitType === 'carrier' || unitType === 'submarine' || unitType === 'assaultship') && building.type !== 'naval_academy') return false;
-  if (unitType === 'missile_launcher' && building.type !== 'carbase') return false;
-
-  // Initialize queue
-  if (!building.productionQueue) building.productionQueue = [];
-  if (building.productionQueue.length >= 10) return false;
-
-  const unitConfig = getUnitDefinition(unitType);
-  
-  if (player.resources >= unitConfig.cost && player.population + unitConfig.pop <= player.maxPopulation) {
-    player.resources -= unitConfig.cost;
-    player.population += unitConfig.pop;
-    
-    building.productionQueue.push({
-      unitType: unitType,
-      buildTime: unitConfig.buildTime,
-      userId: userId
-    });
-    
-    if (!building.producing) {
-      const next = building.productionQueue[0];
-      building.producing = { unitType: next.unitType, startTime: Date.now(), buildTime: next.buildTime, userId: next.userId };
-    }
-    
-    return true;
-  }
-  
-  return false;
 }
 
 if (!BENCHMARK_MODE) {

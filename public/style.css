@@ -17,6 +17,23 @@
     --ui-button-active: rgba(143, 153, 163, 0.4);
     --ui-surface: rgba(255, 255, 255, 0.05);
     --ui-surface-accent: rgba(143, 153, 163, 0.08);
+    --ui-font-display: 'Pixelify Sans', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+@font-face {
+    font-family: 'Pixelify Sans';
+    src: url('/assets/fonts/pixelify-sans/static/PixelifySans-Regular.ttf') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Pixelify Sans';
+    src: url('/assets/fonts/pixelify-sans/static/PixelifySans-Bold.ttf') format('truetype');
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
 }
 
 body {
@@ -24,6 +41,47 @@ body {
     overflow: hidden;
     background: #141618;
     color: #fff;
+}
+
+#loginScreen h1,
+#loginScreen label,
+#loginScreen input,
+#loginScreen select,
+#loginScreen button,
+#topHud,
+#rankingsPanel,
+#selectionInfo,
+#bottomPanel,
+#unitActionPanel,
+#buildMenu,
+#workerBuildMenu,
+#squadMenu,
+#formationPanel,
+#trainingPanel,
+#trainingPanel input,
+.skill-btn,
+.skill-desc,
+.prod-btn,
+.worker-build-tab,
+.squad-btn,
+.action-btn,
+.train-btn,
+.train-preset-btn,
+.train-diff-tab {
+    font-family: var(--ui-font-display);
+}
+
+#slbmInstructions,
+#airstrikeInstructions,
+#mineInstructions,
+#killLogContainer,
+.kill-log-message,
+#productionLabelInline,
+#slbmProgressLabel,
+#aircraftProgressLabel,
+#gameLog,
+#gameLog div {
+    font-family: var(--ui-font-display);
 }
 
 .screen {
@@ -76,7 +134,7 @@ body {
     margin-bottom: 30px;
     color: #f0f2f4;
     font-size: 32px;
-    letter-spacing: -0.03em;
+    letter-spacing: 0.05em;
     text-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
 }
 
@@ -317,10 +375,26 @@ body {
     margin-right: 8px;
 }
 
+.ranking-item .ranking-header-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 5px;
+}
+
+.ranking-item .ranking-faction-chip {
+    width: 12px;
+    height: 12px;
+    min-width: 12px;
+    border-radius: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25) inset;
+}
+
 .ranking-item .username {
     font-weight: bold;
     color: #fff;
-    margin-bottom: 5px;
+    margin-bottom: 0;
 }
 
 .ranking-item .stats {
@@ -485,10 +559,11 @@ body {
     color: #fff;
     border-radius: 5px;
     cursor: pointer;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: bold;
     transition: background 0.15s ease;
     white-space: nowrap;
+    letter-spacing: 0.03em;
 }
 
 .skill-btn:hover {
@@ -547,7 +622,7 @@ body {
     border-radius: 4px;
     font-size: 12px;
     color: var(--ui-accent-muted);
-    line-height: 1.4;
+    line-height: 1.5;
 }
 
 .skill-desc.desc-purple {
@@ -678,7 +753,7 @@ body {
     color: #b8c0c7;
     font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.05em;
     cursor: pointer;
     transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
@@ -820,16 +895,18 @@ body {
 }
 
 .prod-btn-name {
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
     color: #f3f6f8;
     line-height: 1.05;
     word-break: keep-all;
+    letter-spacing: 0.04em;
 }
 
 .prod-btn-cost {
     font-size: 10px;
     color: #adb8c2;
+    letter-spacing: 0.03em;
 }
 
 .prod-btn-desc {
@@ -938,6 +1015,7 @@ body {
     color: white;
     font-size: 20px;
     font-weight: bold;
+    letter-spacing: 0.03em;
     text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
     box-shadow: 0 0 30px rgba(255, 50, 50, 0.6), 0 0 60px rgba(255, 50, 50, 0.3);
     animation: killLogAppear 0.3s ease-out, killLogDisappear 0.5s ease-in 2.5s forwards;

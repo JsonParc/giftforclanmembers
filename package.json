@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "generate:map-image": "node scripts/generate-map-image.js"
+    "generate:map-image": "node scripts/generate-map-image.js",
+    "train:colab": "node scripts/colab-train.js"
   },
   "dependencies": {
     "express": "^4.18.2",
