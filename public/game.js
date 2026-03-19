@@ -14,21 +14,21 @@ function updateActionModeIndicator() {
     const indicator = document.getElementById('modeIndicator');
     if (!indicator) return;
     if (attackMode) {
-        indicator.textContent = 'Attack mode (left click a target)';
+        indicator.textContent = uiText('공격 모드 (좌클릭으로 목표 지정)', 'Attack mode (left click a target)');
         indicator.style.color = '#ff4444';
         indicator.style.display = 'inline';
         canvas.style.cursor = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'32\' height=\'32\'%3E%3Ccircle cx=\'16\' cy=\'16\' r=\'14\' fill=\'none\' stroke=\'red\' stroke-width=\'2\'/%3E%3Cline x1=\'16\' y1=\'4\' x2=\'16\' y2=\'28\' stroke=\'red\' stroke-width=\'2\'/%3E%3Cline x1=\'4\' y1=\'16\' x2=\'28\' y2=\'16\' stroke=\'red\' stroke-width=\'2\'/%3E%3C/svg%3E") 16 16, crosshair';
         return;
     }
     if (assaultShipLoadMode === 'ship-target') {
-        indicator.textContent = 'Boarding mode (click an assault ship)';
+        indicator.textContent = uiText('탑승 모드 (강습상륙함 클릭)', 'Boarding mode (click an assault ship)');
         indicator.style.color = '#ffb347';
         indicator.style.display = 'inline';
         canvas.style.cursor = 'pointer';
         return;
     }
     if (assaultShipLoadMode === 'cargo-target') {
-        indicator.textContent = 'Boarding mode (click a unit)';
+        indicator.textContent = uiText('탑승 모드 (탑승시킬 유닛 클릭)', 'Boarding mode (click a unit)');
         indicator.style.color = '#ffb347';
         indicator.style.display = 'inline';
         canvas.style.cursor = 'pointer';
@@ -291,7 +291,12 @@ const RECON_AIRCRAFT_BUILD_TIME_MS = 18000;
 const RECON_AIRCRAFT_MAX_PER_CARRIER = 3;
 const RECON_AIRCRAFT_VISION_RADIUS = 2600;
 const CARBASE_BUILD_COST = 350;
-const BATTLESHIP_COST = 2400;
+const BATTLESHIP_COST = 1400;
+const BATTLESHIP_POPULATION = 10;
+const CARRIER_COST = 1600;
+const CARRIER_POPULATION = 12;
+const SUBMARINE_COST = 1800;
+const SUBMARINE_POPULATION = 8;
 const MISSILE_LAUNCHER_COST = 2200;
 const MISSILE_LAUNCHER_BUILD_TIME_MS = 18000;
 const MISSILE_LAUNCHER_DEPLOY_STAGE_MS = 1000;
@@ -299,7 +304,8 @@ const MISSILE_LAUNCHER_RANGE = 2500;
 const MISSILE_LAUNCHER_SELECTION_SIZE = 36;
 const MISSILE_LAUNCHER_HEIGHT_MULTIPLIER = 3.2;
 const MISSILE_LAUNCHER_MOBILE_HEIGHT_MULTIPLIER = 4.0;
-const ASSAULT_SHIP_COST = 500;
+const ASSAULT_SHIP_COST = 1000;
+const ASSAULT_SHIP_POPULATION = 10;
 const ASSAULT_SHIP_MAX_LAUNCHERS = 10;
 const ASSAULT_SHIP_LOAD_RADIUS = 260;
 const ASSAULT_SHIP_LAND_RADIUS = 260;
@@ -340,6 +346,70 @@ const WORKER_FILL_COLOR = 0x8f99a3;
 const WORKER_OUTLINE_COLOR = 0xe4e8eb;
 const QUEUE_HIGHLIGHT_BG = 'rgba(143,153,163,0.28)';
 const QUEUE_HIGHLIGHT_BORDER = '#b8c0c7';
+const UI_LANGUAGE_STORAGE_KEY = 'mw_lang';
+const UNIT_TYPE_LABELS = Object.freeze({
+    worker: Object.freeze({ ko: '일꾼', en: 'Worker' }),
+    destroyer: Object.freeze({ ko: '구축함', en: 'Destroyer' }),
+    cruiser: Object.freeze({ ko: '순양함', en: 'Cruiser' }),
+    battleship: Object.freeze({ ko: '전함', en: 'Battleship' }),
+    carrier: Object.freeze({ ko: '항공모함', en: 'Carrier' }),
+    assaultship: Object.freeze({ ko: '강습상륙함', en: 'Assault Ship' }),
+    submarine: Object.freeze({ ko: '잠수함', en: 'Submarine' }),
+    aircraft: Object.freeze({ ko: '함재기', en: 'Strike Craft' }),
+    recon_aircraft: Object.freeze({ ko: '정찰기', en: 'Recon Craft' }),
+    missile_launcher: Object.freeze({ ko: '미사일 발사차량', en: 'Missile Launcher' }),
+    frigate: Object.freeze({ ko: '호위함', en: 'Frigate' })
+});
+const BUILDING_TYPE_LABELS = Object.freeze({
+    headquarters: Object.freeze({ ko: '본부', en: 'Headquarters' }),
+    shipyard: Object.freeze({ ko: '조선소', en: 'Shipyard' }),
+    naval_academy: Object.freeze({ ko: '해군 사관학교', en: 'Advanced Shipyard' }),
+    carbase: Object.freeze({ ko: '차량 기지', en: 'Vehicle Bay' }),
+    power_plant: Object.freeze({ ko: '발전소', en: 'Power Plant' }),
+    missile_silo: Object.freeze({ ko: '미사일 사일로', en: 'Missile Silo' }),
+    defense_tower: Object.freeze({ ko: '방어 타워', en: 'Defense Tower' })
+});
+const WORKER_BUILD_CATEGORY_LABELS = Object.freeze({
+    general: Object.freeze({ ko: '기본 건물', en: 'Core Structures' }),
+    advanced: Object.freeze({ ko: '고급 건물', en: 'Advanced Structures' })
+});
+const WORKER_BUILD_ITEM_TEXT = Object.freeze({
+    headquarters: Object.freeze({ ko: { name: '본부', desc: '일꾼 생산' }, en: { name: 'Headquarters', desc: 'Builds workers' } }),
+    power_plant: Object.freeze({ ko: { name: '발전소', desc: '인구 +3' }, en: { name: 'Power Plant', desc: 'Population +3' } }),
+    shipyard: Object.freeze({ ko: { name: '조선소', desc: '인구 +5' }, en: { name: 'Shipyard', desc: 'Population +5' } }),
+    defense_tower: Object.freeze({ ko: { name: '방어 타워', desc: '' }, en: { name: 'Defense Tower', desc: '' } }),
+    naval_academy: Object.freeze({ ko: { name: '해군 사관학교', desc: '인구 +10' }, en: { name: 'Advanced Shipyard', desc: 'Population +10' } }),
+    missile_silo: Object.freeze({ ko: { name: '미사일 사일로', desc: '' }, en: { name: 'Missile Silo', desc: '' } }),
+    carbase: Object.freeze({ ko: { name: '차량 기지', desc: '핵심 건물 각각 2개 필요' }, en: { name: 'Vehicle Bay', desc: 'Requires two of every core structure' } })
+});
+const DIFFICULTY_DESCRIPTIONS = Object.freeze({
+    ko: Object.freeze({
+        easy: '규칙 기반 AI. 확장과 전투 템포가 느립니다',
+        normal: '표준 규칙 기반 AI',
+        hard: '전술과 스킬 사용이 강화된 강화학습 AI',
+        expert: '자원 보너스와 빠른 판단을 가진 최상급 강화학습 AI'
+    }),
+    en: Object.freeze({
+        easy: 'Rule-based AI with slower decisions and lower expansion pressure',
+        normal: 'Standard rule-based AI',
+        hard: 'Reinforcement-learned AI with better tactics and skill usage',
+        expert: 'Top-end RL AI with resource bonus and faster decisions'
+    })
+});
+const DIFFICULTY_OPTION_LABELS = Object.freeze({
+    ko: Object.freeze({
+        easy: '쉬움 - 캐주얼',
+        normal: '보통 - 기본 AI',
+        hard: '어려움 - RL AI',
+        expert: '전문가 - 상위 RL AI'
+    }),
+    en: Object.freeze({
+        easy: 'Easy - Casual',
+        normal: 'Normal - Standard AI',
+        hard: 'Hard - RL AI',
+        expert: 'Expert - Elite RL AI'
+    })
+});
 const WORKER_BUILD_CATEGORIES = Object.freeze({
     general: Object.freeze({
         label: 'Core Structures',
@@ -2342,27 +2412,14 @@ function buildLandCellSnapshotFromMap(map) {
     };
 }
 
-// Helper: get English name for unit type
+// Helper: get localized name for unit type
 function getUnitTypeName(typeOrUnit) {
     const unit = (typeOrUnit && typeof typeOrUnit === 'object') ? typeOrUnit : null;
     const type = unit ? unit.type : typeOrUnit;
     if (unit && isYamatoBattleshipUnit(unit)) {
         return YAMATO_ENTITY_NAME;
     }
-    const names = {
-        'worker': 'Worker',
-        'destroyer': 'Destroyer',
-        'cruiser': 'Cruiser',
-        'battleship': 'Battleship',
-        'carrier': 'Carrier',
-        'assaultship': 'Assault Ship',
-        'submarine': 'Submarine',
-        'aircraft': 'Strike Craft',
-        'recon_aircraft': 'Recon Craft',
-        'missile_launcher': 'Missile Launcher',
-        'frigate': 'Frigate'
-    };
-    return names[type] || type;
+    return getLocalizedLabel(UNIT_TYPE_LABELS, type);
 }
 
 function getUnitSelectionGroupName(type, units = []) {
@@ -2377,18 +2434,9 @@ function getUnitSelectionGroupName(type, units = []) {
     return getUnitTypeName(type);
 }
 
-// Helper: get English name for building type
+// Helper: get localized name for building type
 function getBuildingTypeName(type) {
-    const names = {
-        'headquarters': 'Headquarters',
-        'shipyard': 'Shipyard',
-        'naval_academy': 'Advanced Shipyard',
-        'carbase': 'Vehicle Bay',
-        'power_plant': 'Power Plant',
-        'missile_silo': 'Missile Silo',
-        'defense_tower': 'Defense Tower'
-    };
-    return names[type] || type;
+    return getLocalizedLabel(BUILDING_TYPE_LABELS, type);
 }
 
 async function downloadLandCells() {
@@ -3003,29 +3051,29 @@ function getAssaultShipLoadableUnitSummary(units) {
     const workerCount = units.filter(unit => unit.type === 'worker').length;
     const launcherCount = units.filter(unit => unit.type === 'missile_launcher').length;
     const parts = [];
-    if (workerCount > 0) parts.push(`Workers ${workerCount}`);
-    if (launcherCount > 0) parts.push(`Launchers ${launcherCount}`);
-    return parts.join(' / ') || `Units ${units.length}`;
+    if (workerCount > 0) parts.push(getCurrentLanguage() === 'en' ? `Workers ${workerCount}` : `일꾼 ${workerCount}`);
+    if (launcherCount > 0) parts.push(getCurrentLanguage() === 'en' ? `Launchers ${launcherCount}` : `발사차량 ${launcherCount}`);
+    return parts.join(' / ') || (getCurrentLanguage() === 'en' ? `Units ${units.length}` : `유닛 ${units.length}`);
 }
 
 function showAssaultShipLoadUnitsSkill(units, options = {}) {
     const { disabled = false, description = '' } = options;
     const slot4 = document.getElementById('skillSlot4');
     slot4.style.display = 'flex';
-    document.getElementById('skillBtn4').textContent = '🛶 Board Assault Ship';
+    document.getElementById('skillBtn4').textContent = uiText('🛶 강습상륙함 탑승', '🛶 Board Assault Ship');
     document.getElementById('skillBtn4').className = 'skill-btn' + (disabled ? ' disabled' : '');
-    document.getElementById('skillDesc4').textContent = description || `${getAssaultShipLoadableUnitSummary(units)} | Click an assault ship to embark`;
+    document.getElementById('skillDesc4').textContent = description || `${getAssaultShipLoadableUnitSummary(units)} | ${uiText('강습상륙함을 클릭해 태우기', 'Click an assault ship to embark')}`;
 }
 
 function showAssaultShipPickupSkill(ships) {
     const readyShips = ships.filter(ship => getAssaultShipLoadedUnitCount(ship) < ASSAULT_SHIP_MAX_LAUNCHERS);
     const slot4 = document.getElementById('skillSlot4');
     slot4.style.display = 'flex';
-    document.getElementById('skillBtn4').textContent = '📥 Load Units';
+    document.getElementById('skillBtn4').textContent = uiText('📥 유닛 탑재', '📥 Load Units');
     document.getElementById('skillBtn4').className = 'skill-btn' + (readyShips.length > 0 ? '' : ' disabled');
     document.getElementById('skillDesc4').textContent = readyShips.length > 0
-        ? `${readyShips.length} assault ships ready | Click to load workers or mobile launchers`
-        : 'All selected assault ships are already full';
+        ? uiText(`${readyShips.length}척 탑재 가능 | 클릭 후 일꾼이나 이동형 발사차량 선택`, `${readyShips.length} assault ships ready | Click to load workers or mobile launchers`)
+        : uiText('선택한 강습상륙함이 모두 가득 찼습니다', 'All selected assault ships are already full');
 }
 
 function getUnitSelectionPriority(type) {
@@ -3087,7 +3135,9 @@ function showBattleshipCombatStanceSkill(units) {
     const maxStacks = stanceEligibleBattleships.reduce((max, unit) => Math.max(max, unit.combatStanceStacks || 0), 0);
     const maxSpeedMultiplier = stanceEligibleBattleships.reduce((max, unit) => Math.max(max, getBattleshipCombatStanceSpeedMultiplier(unit)), 1);
     const hasEligibleBattleships = stanceEligibleBattleships.length > 0;
-    document.getElementById('skillBtn2').textContent = activeCount > 0 ? '⚔️ Combat Stance (Active)' : '⚔️ Combat Stance';
+    document.getElementById('skillBtn2').textContent = activeCount > 0
+        ? uiText('⚔️ 전투 태세 (활성)', '⚔️ Combat Stance (Active)')
+        : uiText('⚔️ 전투 태세', '⚔️ Combat Stance');
     document.getElementById('skillBtn2').className = hasEligibleBattleships
         ? ('skill-btn' + (activeCount > 0 ? ' skill-active' : ''))
         : 'skill-btn disabled';
@@ -3095,20 +3145,20 @@ function showBattleshipCombatStanceSkill(units) {
 
     if (battleships.length === 1) {
         document.getElementById('skillDesc2').textContent = activeCount > 0
-            ? `Stacks ${maxStacks} | Attack speed x${maxSpeedMultiplier.toFixed(2)} | Costs 10% current HP on each shot | Costs 10% current HP again when ending`
-            : 'Consumes 10% current HP per attack, gains 10% attack speed per stack, then pays 10% current HP again when ending';
+            ? uiText(`중첩 ${maxStacks} | 공격속도 x${maxSpeedMultiplier.toFixed(2)} | 공격할 때마다 현재 체력 10% 소모 | 종료 시 현재 체력 10% 추가 소모`, `Stacks ${maxStacks} | Attack speed x${maxSpeedMultiplier.toFixed(2)} | Costs 10% current HP on each shot | Costs 10% current HP again when ending`)
+            : uiText('공격할 때마다 현재 체력 10%를 소모하고 중첩당 공격속도 10%를 얻으며, 종료 시 현재 체력 10%를 한 번 더 소모합니다', 'Consumes 10% current HP per attack, gains 10% attack speed per stack, then pays 10% current HP again when ending');
         if (comboReadyCount > 0) {
-            document.getElementById('skillDesc2').textContent += ' | Can run with Aegis';
+            document.getElementById('skillDesc2').textContent += uiText(' | 이지스와 동시 사용 가능', ' | Can run with Aegis');
         }
         return;
     }
     document.getElementById('skillDesc2').textContent = activeCount > 0
-        ? `Active ${activeCount}/${stanceEligibleBattleships.length} | Max stacks ${maxStacks} | Peak speed x${maxSpeedMultiplier.toFixed(2)}`
+        ? uiText(`활성 ${activeCount}/${stanceEligibleBattleships.length} | 최대 중첩 ${maxStacks} | 최고 공격속도 x${maxSpeedMultiplier.toFixed(2)}`, `Active ${activeCount}/${stanceEligibleBattleships.length} | Max stacks ${maxStacks} | Peak speed x${maxSpeedMultiplier.toFixed(2)}`)
         : (stanceEligibleBattleships.length === battleships.length
-            ? 'Each selected battleship burns 10% current HP per attack and ramps attack speed by 10% per stack'
-            : 'Only battleships outside Aegis mode can use Combat Stance');
+            ? uiText('선택한 전함은 공격마다 현재 체력 10%를 태우고 중첩당 공격속도 10%를 얻습니다', 'Each selected battleship burns 10% current HP per attack and ramps attack speed by 10% per stack')
+            : uiText('이지스 모드가 아닌 전함만 전투 태세를 사용할 수 있습니다', 'Only battleships outside Aegis mode can use Combat Stance'));
     if (comboReadyCount > 0) {
-        document.getElementById('skillDesc2').textContent += ` | Combo unlocked on ${comboReadyCount}`;
+        document.getElementById('skillDesc2').textContent += uiText(` | 콤보 해금 ${comboReadyCount}`, ` | Combo unlocked on ${comboReadyCount}`);
     }
 }
 
@@ -3119,23 +3169,25 @@ function showBattleshipAegisSkill(units) {
     const slot6 = document.getElementById('skillSlot6');
     slot6.style.display = 'flex';
     const activeCount = battleships.filter(unit => unit.battleshipAegisMode).length;
-    document.getElementById('skillBtn6').textContent = activeCount > 0 ? '🛡️ Aegis Mode (Active)' : '🛡️ Aegis Mode';
+    document.getElementById('skillBtn6').textContent = activeCount > 0
+        ? uiText('🛡️ 이지스 모드 (활성)', '🛡️ Aegis Mode (Active)')
+        : uiText('🛡️ 이지스 모드', '🛡️ Aegis Mode');
     document.getElementById('skillBtn6').className = 'skill-btn' + (activeCount > 0 ? ' skill-active' : '');
     document.getElementById('skillDesc6').className = 'skill-desc';
     if (battleships.length === 1) {
         document.getElementById('skillDesc6').textContent = activeCount > 0
-            ? 'Range and vision x1.5 | Each turret fires every 0.48s | Split tracking | 7 damage per shot | Takes 40% more damage'
-            : 'Boosts range and vision x1.5, gives each turret independent tracking at 0.48s per shot, but increases incoming damage by 40%';
+            ? uiText('사거리 및 시야 x1.5 | 포탑별 0.48초 공격 | 개별 추적 | 발당 7 피해 | 받는 피해 40% 증가', 'Range and vision x1.5 | Each turret fires every 0.48s | Split tracking | 7 damage per shot | Takes 40% more damage')
+            : uiText('사거리와 시야를 x1.5로 늘리고 각 포탑이 0.48초마다 독립 추적 사격하지만, 받는 피해가 40% 증가합니다', 'Boosts range and vision x1.5, gives each turret independent tracking at 0.48s per shot, but increases incoming damage by 40%');
         if (comboReadyCount > 0) {
-            document.getElementById('skillDesc6').textContent += ' | Can run with Combat Stance';
+            document.getElementById('skillDesc6').textContent += uiText(' | 전투 태세와 동시 사용 가능', ' | Can run with Combat Stance');
         }
         return;
     }
     document.getElementById('skillDesc6').textContent = activeCount > 0
-        ? `Active ${activeCount}/${battleships.length} | Range and vision x1.5 | Independent turret tracking | 7 damage per shot | Takes 40% more damage`
-        : 'Selected battleships gain independent turret tracking, 0.48s fire rate, 7 damage per shot, and x1.5 range and vision';
+        ? uiText(`활성 ${activeCount}/${battleships.length} | 사거리 및 시야 x1.5 | 개별 포탑 추적 | 발당 7 피해 | 받는 피해 40% 증가`, `Active ${activeCount}/${battleships.length} | Range and vision x1.5 | Independent turret tracking | 7 damage per shot | Takes 40% more damage`)
+        : uiText('선택한 전함은 독립 포탑 추적, 0.48초 발사속도, 발당 7 피해, 사거리 및 시야 x1.5를 얻습니다', 'Selected battleships gain independent turret tracking, 0.48s fire rate, 7 damage per shot, and x1.5 range and vision');
     if (comboReadyCount > 0) {
-        document.getElementById('skillDesc6').textContent += ` | Combo unlocked on ${comboReadyCount}`;
+        document.getElementById('skillDesc6').textContent += uiText(` | 콤보 해금 ${comboReadyCount}`, ` | Combo unlocked on ${comboReadyCount}`);
     }
 }
 
@@ -3149,18 +3201,20 @@ function showFrigateEngineOverdriveSkill(units) {
         const evasionRatio = Math.max(0, Math.min(FRIGATE_ENGINE_OVERDRIVE_MAX_EVASION, unit.evasionChance || 0));
         return Math.max(max, Math.round(evasionRatio * 100));
     }, 0);
-    document.getElementById('skillBtn6').textContent = activeCount > 0 ? '🔥 Engine Overdrive (Active)' : '🔥 Engine Overdrive';
+    document.getElementById('skillBtn6').textContent = activeCount > 0
+        ? uiText('🔥 엔진 오버드라이브 (활성)', '🔥 Engine Overdrive (Active)')
+        : uiText('🔥 엔진 오버드라이브', '🔥 Engine Overdrive');
     document.getElementById('skillBtn6').className = 'skill-btn' + (activeCount > 0 ? ' skill-active' : '');
     document.getElementById('skillDesc6').className = 'skill-desc';
     if (frigates.length === 1) {
         document.getElementById('skillDesc6').textContent = activeCount > 0
-            ? `Burns 10% max HP per second | Speed +10% | Evasion ${highestEvasionPercent}% (cap 80%)`
-            : 'Burns 10% max HP per second, gains speed +10%, and converts lost HP into evasion up to 80%';
+            ? uiText(`초당 최대 체력 10% 소모 | 속도 +10% | 회피 ${highestEvasionPercent}% (최대 80%)`, `Burns 10% max HP per second | Speed +10% | Evasion ${highestEvasionPercent}% (cap 80%)`)
+            : uiText('초당 최대 체력 10%를 소모하고 속도 +10%를 얻으며, 잃은 체력을 최대 80% 회피율로 전환합니다', 'Burns 10% max HP per second, gains speed +10%, and converts lost HP into evasion up to 80%');
         return;
     }
     document.getElementById('skillDesc6').textContent = activeCount > 0
-        ? `Active ${activeCount}/${frigates.length} | Speed +10% | Peak evasion ${highestEvasionPercent}%`
-        : 'Selected frigates burn 10% max HP per second for speed +10% and rising evasion from lost HP';
+        ? uiText(`활성 ${activeCount}/${frigates.length} | 속도 +10% | 최고 회피 ${highestEvasionPercent}%`, `Active ${activeCount}/${frigates.length} | Speed +10% | Peak evasion ${highestEvasionPercent}%`)
+        : uiText('선택한 호위함은 초당 최대 체력 10%를 소모해 속도 +10%와 잃은 체력 기반 회피율을 얻습니다', 'Selected frigates burn 10% max HP per second for speed +10% and rising evasion from lost HP');
 }
 
 function getReadyReconCarriers() {
@@ -3561,33 +3615,35 @@ function renderSingleUnitPanel(unit, options = {}) {
 
     let displayDamage = unit.damage || 0;
     if (unit.type === 'carrier') {
-        displayDamage = 'Aircraft / Recon';
+        displayDamage = uiText('함재기 / 정찰기', 'Aircraft / Recon');
     } else if (unit.type === 'missile_launcher') {
-        displayDamage = unit.deployState === 'deployed' ? '50% current HP vs ships / SLBMs' : 'Deploy required';
+        displayDamage = unit.deployState === 'deployed'
+            ? uiText('함선 / SLBM 대상 현재 체력 50%', '50% current HP vs ships / SLBMs')
+            : uiText('전개 필요', 'Deploy required');
     } else if (unit.type === 'assaultship') {
-        displayDamage = 'Transport only';
+        displayDamage = uiText('수송 전용', 'Transport only');
     } else if (unit.type === 'battleship' && unit.battleshipAegisMode) {
-        displayDamage = `${getDisplayedUnitDamageValue(unit)} (Aegis)`;
+        displayDamage = `${getDisplayedUnitDamageValue(unit)} ${uiText('(이지스)', '(Aegis)')}`;
     } else if (unit.type === 'cruiser' && unit.aegisMode) {
-        displayDamage = '25 (Aegis)';
+        displayDamage = `25 ${uiText('(이지스)', '(Aegis)')}`;
     } else if (unit.type === 'battleship' && unit.aimedShot) {
-        displayDamage = `${displayDamage * 2} (Precision)`;
+        displayDamage = `${displayDamage * 2} ${uiText('(정밀사격)', '(Precision)')}`;
     } else if (unit.type === 'cruiser' && unit.isIsolated) {
-        displayDamage = `${displayDamage * 2} (Lone Wolf)`;
+        displayDamage = `${displayDamage * 2} ${uiText('(고독한 늑대)', '(Lone Wolf)')}`;
     }
     document.getElementById('statDamage').textContent = displayDamage;
 
     let displayRange = unit.attackRange || 0;
     if (unit.type === 'missile_launcher' && unit.deployState !== 'deployed') {
-        displayRange = 'Deploy required';
+        displayRange = uiText('전개 필요', 'Deploy required');
     } else if (unit.type === 'assaultship') {
         displayRange = '-';
     } else if (unit.type === 'battleship' && unit.battleshipAegisMode) {
-        displayRange = `${Math.round(displayRange)} (Aegis)`;
+        displayRange = `${Math.round(displayRange)} ${uiText('(이지스)', '(Aegis)')}`;
     } else if (unit.type === 'battleship' && unit.aimedShot && !unit.battleshipAegisMode) {
-        displayRange = `${displayRange * 2} (Precision)`;
+        displayRange = `${displayRange * 2} ${uiText('(정밀사격)', '(Precision)')}`;
     } else if (unit.type === 'cruiser' && unit.aegisMode) {
-        displayRange = `${Math.round(displayRange * 0.4)} (Aegis)`;
+        displayRange = `${Math.round(displayRange * 0.4)} ${uiText('(이지스)', '(Aegis)')}`;
     }
     document.getElementById('statRange').textContent = displayRange;
     document.getElementById('statHp').textContent = `${unit.hp || 0} / ${unit.maxHp || 0}`;
@@ -3596,11 +3652,13 @@ function renderSingleUnitPanel(unit, options = {}) {
     if (showAttackTarget && attackTarget && !unit.holdPosition) {
         document.getElementById('targetLabel').textContent = `🎯 ${attackTarget.name}`;
     } else {
-        const factionSuffix = unit.userId === gameState.userId ? '' : ' (Enemy)';
-        const holdSuffix = unit.userId === gameState.userId && unit.holdPosition ? ' | Hold' : '';
+        const factionSuffix = unit.userId === gameState.userId ? '' : uiText(' (적)', ' (Enemy)');
+        const holdSuffix = unit.userId === gameState.userId && unit.holdPosition ? uiText(' | 대기', ' | Hold') : '';
         const stateSuffix = unit.type === 'missile_launcher'
             ? ` | ${getMissileLauncherStateLabel(unit)}`
-            : (unit.type === 'assaultship' ? ` | Loaded ${getAssaultShipLoadedUnitCount(unit)}/${ASSAULT_SHIP_MAX_LAUNCHERS}` : '');
+            : (unit.type === 'assaultship'
+                ? uiText(` | 탑재 ${getAssaultShipLoadedUnitCount(unit)}/${ASSAULT_SHIP_MAX_LAUNCHERS}`, ` | Loaded ${getAssaultShipLoadedUnitCount(unit)}/${ASSAULT_SHIP_MAX_LAUNCHERS}`)
+                : '');
         document.getElementById('targetLabel').textContent = `${getUnitTypeName(unit)}${factionSuffix}${stateSuffix}${holdSuffix}`;
         setTargetLabelBattleshipSkinInteraction(unit);
     }
@@ -3610,9 +3668,9 @@ function renderSingleUnitPanel(unit, options = {}) {
     if (unit.type === 'submarine') {
         const slot1 = document.getElementById('skillSlot1');
         slot1.style.display = 'flex';
-        document.getElementById('skillBtn1').textContent = '🚀 Fire SLBM';
+        document.getElementById('skillBtn1').textContent = uiText('🚀 SLBM 발사', '🚀 Fire SLBM');
         document.getElementById('skillBtn1').className = 'skill-btn';
-        document.getElementById('skillDesc1').textContent = `Launches a nuclear strike with an 800 radius (loaded: ${unit.loadedSlbms || 0}/3 | total stock: ${gameState.missiles || 0})`;
+        document.getElementById('skillDesc1').textContent = uiText(`반경 800의 핵공격 발사 (적재: ${unit.loadedSlbms || 0}/3 | 총 재고: ${gameState.missiles || 0})`, `Launches a nuclear strike with an 800 radius (loaded: ${unit.loadedSlbms || 0}/3 | total stock: ${gameState.missiles || 0})`);
         document.getElementById('skillDesc1').className = 'skill-desc';
 
         // Slot 2: SLBM 적재
@@ -3620,11 +3678,11 @@ function renderSingleUnitPanel(unit, options = {}) {
         slot2.style.display = 'flex';
         const loaded = unit.loadedSlbms || 0;
         const isFull = loaded >= 3;
-        document.getElementById('skillBtn2').textContent = '📦 Load SLBM';
+        document.getElementById('skillBtn2').textContent = uiText('📦 SLBM 적재', '📦 Load SLBM');
         document.getElementById('skillBtn2').className = 'skill-btn' + (isFull ? ' disabled' : '');
         document.getElementById('skillDesc2').textContent = isFull
-            ? `Loaded ${loaded}/3 - full`
-            : `Load one missile near a silo (${loaded}/3 loaded)`;
+            ? uiText(`적재 ${loaded}/3 - 가득 참`, `Loaded ${loaded}/3 - full`)
+            : uiText(`사일로 근처에서 미사일 1발 적재 (${loaded}/3 적재됨)`, `Load one missile near a silo (${loaded}/3 loaded)`);
 
         // Slot 3: 은신
         const slot3 = document.getElementById('skillSlot3');
@@ -3635,17 +3693,17 @@ function renderSingleUnitPanel(unit, options = {}) {
         const cdRemain = onCooldown ? Math.ceil((unit.stealthCooldownUntil - now) / 1000) : 0;
         if (stealthOn) {
             const expiresIn = unit.stealthExpiresAt ? Math.max(0, Math.ceil((unit.stealthExpiresAt - now) / 1000)) : 0;
-            document.getElementById('skillBtn3').textContent = `🫥 Decloak (${expiresIn}s)`;
+            document.getElementById('skillBtn3').textContent = uiText(`🫥 해제 (${expiresIn}s)`, `🫥 Decloak (${expiresIn}s)`);
             document.getElementById('skillBtn3').className = 'skill-btn skill-active';
-            document.getElementById('skillDesc3').textContent = 'Currently cloaked - hidden from enemies until attacking';
+            document.getElementById('skillDesc3').textContent = uiText('현재 은신 중 - 공격 전까지 적에게 보이지 않음', 'Currently cloaked - hidden from enemies until attacking');
         } else if (onCooldown) {
-            document.getElementById('skillBtn3').textContent = `🫥 Cloak (${cdRemain}s)`;
+            document.getElementById('skillBtn3').textContent = uiText(`🫥 은신 (${cdRemain}s)`, `🫥 Cloak (${cdRemain}s)`);
             document.getElementById('skillBtn3').className = 'skill-btn skill-cooldown';
-            document.getElementById('skillDesc3').textContent = `${cdRemain}s cooldown remaining`;
+            document.getElementById('skillDesc3').textContent = uiText(`${cdRemain}초 후 재사용`, `${cdRemain}s cooldown remaining`);
         } else {
-            document.getElementById('skillBtn3').textContent = '🫥 Cloak';
+            document.getElementById('skillBtn3').textContent = uiText('🫥 은신', '🫥 Cloak');
             document.getElementById('skillBtn3').className = 'skill-btn';
-            document.getElementById('skillDesc3').textContent = 'Stay hidden for 15 seconds (30 second cooldown)';
+            document.getElementById('skillDesc3').textContent = uiText('15초 동안 은신 (재사용 대기시간 30초)', 'Stay hidden for 15 seconds (30 second cooldown)');
         }
     }
 
@@ -3660,21 +3718,21 @@ function renderSingleUnitPanel(unit, options = {}) {
         const onCooldown = !aimedShotBlockedByAegis && unit.aimedShotCooldownUntil && now < unit.aimedShotCooldownUntil;
         const cdRemain = onCooldown ? Math.ceil((unit.aimedShotCooldownUntil - now) / 1000) : 0;
         if (aimedShotBlockedByAegis) {
-            document.getElementById('skillBtn5').textContent = '🎯 Precision Shot';
+            document.getElementById('skillBtn5').textContent = uiText('🎯 정밀 사격', '🎯 Precision Shot');
             document.getElementById('skillBtn5').className = 'skill-btn disabled';
-            document.getElementById('skillDesc5').textContent = 'Unavailable while Aegis mode is active';
+            document.getElementById('skillDesc5').textContent = uiText('이지스 모드에서는 사용할 수 없습니다', 'Unavailable while Aegis mode is active');
         } else if (isActive) {
-            document.getElementById('skillBtn5').textContent = '🎯 Precision Shot (Active)';
+            document.getElementById('skillBtn5').textContent = uiText('🎯 정밀 사격 (활성)', '🎯 Precision Shot (Active)');
             document.getElementById('skillBtn5').className = 'skill-btn skill-active';
-            document.getElementById('skillDesc5').textContent = 'The next shot gets double range, damage, and vision';
+            document.getElementById('skillDesc5').textContent = uiText('다음 공격은 사거리, 피해, 시야가 2배가 됩니다', 'The next shot gets double range, damage, and vision');
         } else if (onCooldown) {
-            document.getElementById('skillBtn5').textContent = `🎯 Precision Shot (${cdRemain}s)`;
+            document.getElementById('skillBtn5').textContent = uiText(`🎯 정밀 사격 (${cdRemain}s)`, `🎯 Precision Shot (${cdRemain}s)`);
             document.getElementById('skillBtn5').className = 'skill-btn skill-cooldown';
-            document.getElementById('skillDesc5').textContent = `${cdRemain}s cooldown remaining`;
+            document.getElementById('skillDesc5').textContent = uiText(`${cdRemain}초 후 재사용`, `${cdRemain}s cooldown remaining`);
         } else {
-            document.getElementById('skillBtn5').textContent = '🎯 Precision Shot';
+            document.getElementById('skillBtn5').textContent = uiText('🎯 정밀 사격', '🎯 Precision Shot');
             document.getElementById('skillBtn5').className = 'skill-btn';
-            document.getElementById('skillDesc5').textContent = 'Doubles range, damage, and vision for the next attack (16 second cooldown)';
+            document.getElementById('skillDesc5').textContent = uiText('다음 공격의 사거리, 피해, 시야가 2배가 됩니다 (재사용 대기시간 16초)', 'Doubles range, damage, and vision for the next attack (16 second cooldown)');
         }
     }
 
@@ -3687,16 +3745,16 @@ function renderSingleUnitPanel(unit, options = {}) {
         slot6.style.display = 'flex';
         const isAegis = unit.aegisMode ? true : false;
         if (isAegis) {
-            document.getElementById('skillBtn6').textContent = '🛡️ Aegis Mode (Active)';
+            document.getElementById('skillBtn6').textContent = uiText('🛡️ 이지스 모드 (활성)', '🛡️ Aegis Mode (Active)');
             document.getElementById('skillBtn6').className = 'skill-btn skill-active';
-            document.getElementById('skillDesc6').textContent = 'Can intercept SLBMs | 25 damage to ships, 50 to SLBMs | 30% damage reduction | 60% shorter range';
+            document.getElementById('skillDesc6').textContent = uiText('SLBM 요격 가능 | 함선 25 피해, SLBM 50 피해 | 받는 피해 30% 감소 | 사거리 60% 감소', 'Can intercept SLBMs | 25 damage to ships, 50 to SLBMs | 30% damage reduction | 60% shorter range');
         } else {
-            document.getElementById('skillBtn6').textContent = '🛡️ Aegis Mode';
+            document.getElementById('skillBtn6').textContent = uiText('🛡️ 이지스 모드', '🛡️ Aegis Mode');
             document.getElementById('skillBtn6').className = 'skill-btn';
-            document.getElementById('skillDesc6').textContent = 'Toggle SLBM interception mode (25 vs ships, 50 vs SLBMs, 30% damage reduction, 60% shorter range)';
+            document.getElementById('skillDesc6').textContent = uiText('SLBM 요격 모드 전환 (함선 25, SLBM 50 피해 | 받는 피해 30% 감소 | 사거리 60% 감소)', 'Toggle SLBM interception mode (25 vs ships, 50 vs SLBMs, 30% damage reduction, 60% shorter range)');
         }
         if (unit.isIsolated) {
-            document.getElementById('skillDesc6').textContent += ' | 🐺 Lone Wolf: +100% damage, 50% damage reduction';
+            document.getElementById('skillDesc6').textContent += uiText(' | 🐺 고독한 늑대: 피해 +100%, 받는 피해 50% 감소', ' | 🐺 Lone Wolf: +100% damage, 50% damage reduction');
         }
     }
 
@@ -3709,23 +3767,23 @@ function renderSingleUnitPanel(unit, options = {}) {
         const searchCd = unit.searchCooldownUntil && now7 < unit.searchCooldownUntil;
         const searchRemain = searchCd ? Math.ceil((unit.searchCooldownUntil - now7) / 1000) : 0;
         if (searchActive) {
-            document.getElementById('skillBtn7').textContent = `🔍 Sonar Sweep (${searchActiveRemain}s)`;
+            document.getElementById('skillBtn7').textContent = uiText(`🔍 소나 스윕 (${searchActiveRemain}s)`, `🔍 Sonar Sweep (${searchActiveRemain}s)`);
             document.getElementById('skillBtn7').className = 'skill-btn skill-active';
-            document.getElementById('skillDesc7').textContent = `Vision locked at 4800 | Cooldown ${searchRemain}s`;
+            document.getElementById('skillDesc7').textContent = uiText(`시야 4800 고정 | 재사용 ${searchRemain}초`, `Vision locked at 4800 | Cooldown ${searchRemain}s`);
         } else if (searchCd) {
-            document.getElementById('skillBtn7').textContent = `🔍 Sonar Sweep (${searchRemain}s)`;
+            document.getElementById('skillBtn7').textContent = uiText(`🔍 소나 스윕 (${searchRemain}s)`, `🔍 Sonar Sweep (${searchRemain}s)`);
             document.getElementById('skillBtn7').className = 'skill-btn skill-cooldown';
-            document.getElementById('skillDesc7').textContent = `${searchRemain}s cooldown remaining`;
+            document.getElementById('skillDesc7').textContent = uiText(`${searchRemain}초 후 재사용`, `${searchRemain}s cooldown remaining`);
         } else {
-            document.getElementById('skillBtn7').textContent = '🔍 Sonar Sweep';
+            document.getElementById('skillBtn7').textContent = uiText('🔍 소나 스윕', '🔍 Sonar Sweep');
             document.getElementById('skillBtn7').className = 'skill-btn';
-            document.getElementById('skillDesc7').textContent = 'Passive: auto-detect submarines and mines in vision | Active: 4800 vision for 10 seconds';
+            document.getElementById('skillDesc7').textContent = uiText('패시브: 시야 내 잠수함과 기뢰 자동 탐지 | 액티브: 10초간 시야 4800', 'Passive: auto-detect submarines and mines in vision | Active: 4800 vision for 10 seconds');
         }
         const slot8 = document.getElementById('skillSlot8');
         slot8.style.display = 'flex';
-        document.getElementById('skillBtn8').textContent = '💣 Lay Mine';
+        document.getElementById('skillBtn8').textContent = uiText('💣 기뢰 설치', '💣 Lay Mine');
         document.getElementById('skillBtn8').className = 'skill-btn';
-        document.getElementById('skillDesc8').textContent = 'Place a mine at the clicked location';
+        document.getElementById('skillDesc8').textContent = uiText('클릭한 위치에 기뢰를 설치합니다', 'Place a mine at the clicked location');
     }
 
     if (unit.type === 'missile_launcher') {
@@ -3734,22 +3792,24 @@ function renderSingleUnitPanel(unit, options = {}) {
         const btn = document.getElementById('skillBtn3');
         const desc = document.getElementById('skillDesc3');
         if (unit.deployState === 'deployed') {
-            btn.textContent = '🚛 Undeploy';
+            btn.textContent = uiText('🚛 해제', '🚛 Undeploy');
             btn.className = 'skill-btn skill-active';
-            desc.textContent = `Battleship-class range ${MISSILE_LAUNCHER_RANGE} | Fires every 40s for 50% current HP damage to ships and SLBMs`;
+            desc.textContent = uiText(`전함급 사거리 ${MISSILE_LAUNCHER_RANGE} | 40초마다 함선과 SLBM에 현재 체력 50% 피해`, `Battleship-class range ${MISSILE_LAUNCHER_RANGE} | Fires every 40s for 50% current HP damage to ships and SLBMs`);
         } else if (unit.deployState === 'undeploying_stage1' || unit.deployState === 'undeploying_stage2') {
-            btn.textContent = '🚛 Undeploying';
+            btn.textContent = uiText('🚛 해제 중', '🚛 Undeploying');
             btn.className = 'skill-btn skill-cooldown disabled';
-            desc.textContent = 'Packing up launcher platform...';
+            desc.textContent = uiText('발사대를 접는 중...', 'Packing up launcher platform...');
         } else if (unit.deployState === 'deploying_stage1' || unit.deployState === 'deploying_stage2') {
-            const stageText = unit.deployState === 'deploying_stage2' ? 'Deploying' : 'Locking Down';
+            const stageText = unit.deployState === 'deploying_stage2'
+                ? uiText('전개 중', 'Deploying')
+                : uiText('고정 중', 'Locking Down');
             btn.textContent = `🚛 ${stageText}`;
             btn.className = 'skill-btn skill-cooldown disabled';
-            desc.textContent = 'Deploying launcher platform...';
+            desc.textContent = uiText('발사대를 전개하는 중...', 'Deploying launcher platform...');
         } else {
-            btn.textContent = '🚛 Deploy';
+            btn.textContent = uiText('🚛 전개', '🚛 Deploy');
             btn.className = 'skill-btn';
-            desc.textContent = 'Anchor this unit in place and switch to long-range missile mode';
+            desc.textContent = uiText('이 유닛을 고정하고 장거리 미사일 모드로 전환합니다', 'Anchor this unit in place and switch to long-range missile mode');
         }
 
         if (canUnitBoardAssaultShip(unit)) {
@@ -3757,7 +3817,7 @@ function renderSingleUnitPanel(unit, options = {}) {
         } else {
             showAssaultShipLoadUnitsSkill([unit], {
                 disabled: true,
-                description: 'Deployed or deploying launchers cannot board an assault ship'
+                description: uiText('전개 중이거나 전개된 발사차량은 강습상륙함에 탈 수 없습니다', 'Deployed or deploying launchers cannot board an assault ship')
             });
         }
     }
@@ -3771,11 +3831,11 @@ function renderSingleUnitPanel(unit, options = {}) {
         slot3.style.display = 'flex';
         const loadedCount = getAssaultShipLoadedUnitCount(unit);
         const canUnload = canUnloadFromAssaultShip(unit);
-        document.getElementById('skillBtn3').textContent = '🚚 Unload Units';
+        document.getElementById('skillBtn3').textContent = uiText('🚚 유닛 하역', '🚚 Unload Units');
         document.getElementById('skillBtn3').className = 'skill-btn' + (canUnload ? '' : ' disabled');
         document.getElementById('skillDesc3').textContent = canUnload
-            ? `Loaded ${loadedCount}/${ASSAULT_SHIP_MAX_LAUNCHERS} | Adjacent to land, ready to unload everything`
-            : `Loaded ${loadedCount}/${ASSAULT_SHIP_MAX_LAUNCHERS} | Must touch land before unloading`;
+            ? uiText(`탑재 ${loadedCount}/${ASSAULT_SHIP_MAX_LAUNCHERS} | 육지에 접해 있어 전체 하역 가능`, `Loaded ${loadedCount}/${ASSAULT_SHIP_MAX_LAUNCHERS} | Adjacent to land, ready to unload everything`)
+            : uiText(`탑재 ${loadedCount}/${ASSAULT_SHIP_MAX_LAUNCHERS} | 하역하려면 육지에 닿아야 함`, `Loaded ${loadedCount}/${ASSAULT_SHIP_MAX_LAUNCHERS} | Must touch land before unloading`);
         showAssaultShipPickupSkill([unit]);
     }
 
@@ -3794,9 +3854,9 @@ function renderSingleUnitPanel(unit, options = {}) {
 
         const slot3 = document.getElementById('skillSlot3');
         slot3.style.display = 'flex';
-        document.getElementById('skillBtn3').textContent = '✈️ Build Aircraft';
+        document.getElementById('skillBtn3').textContent = uiText('✈️ 함재기 생산', '✈️ Build Aircraft');
         document.getElementById('skillBtn3').className = 'skill-btn' + ((!player || player.resources < 100 || queueFull) ? ' disabled' : '');
-        document.getElementById('skillDesc3').textContent = `100 energy / 15s (stored: ${acCount} / deployed: ${deployedCount} / max 10) [queue: ${acQueue.length}]`;
+        document.getElementById('skillDesc3').textContent = uiText(`100 에너지 / 15초 (보관: ${acCount} / 출격: ${deployedCount} / 최대 10) [대기열: ${acQueue.length}]`, `100 energy / 15s (stored: ${acCount} / deployed: ${deployedCount} / max 10) [queue: ${acQueue.length}]`);
 
         const slot4 = document.getElementById('skillSlot4');
         slot4.style.display = 'flex';
@@ -3806,17 +3866,19 @@ function renderSingleUnitPanel(unit, options = {}) {
         const airstrikeCd = !isAdminUser && unit.airstrikeCooldownUntil && now4 < unit.airstrikeCooldownUntil;
         const cdRemain4 = airstrikeCd ? Math.ceil((unit.airstrikeCooldownUntil - now4) / 1000) : 0;
         if (airstrikeReady) {
-            document.getElementById('skillBtn4').textContent = '✈️ Airstrike (Ready)';
+            document.getElementById('skillBtn4').textContent = uiText('✈️ 공습 (준비됨)', '✈️ Airstrike (Ready)');
             document.getElementById('skillBtn4').className = 'skill-btn skill-active';
-            document.getElementById('skillDesc4').textContent = isAdminUser ? 'Admin mode: ready instantly' : 'Consumes 10 aircraft to perform three area bombing passes';
+            document.getElementById('skillDesc4').textContent = isAdminUser
+                ? uiText('관리자 모드: 즉시 사용 가능', 'Admin mode: ready instantly')
+                : uiText('함재기 10기를 소모해 3회 지역 폭격을 수행', 'Consumes 10 aircraft to perform three area bombing passes');
         } else if (acCount >= 10 && airstrikeCd) {
-            document.getElementById('skillBtn4').textContent = `✈️ Airstrike (${cdRemain4}s)`;
+            document.getElementById('skillBtn4').textContent = uiText(`✈️ 공습 (${cdRemain4}s)`, `✈️ Airstrike (${cdRemain4}s)`);
             document.getElementById('skillBtn4').className = 'skill-btn skill-cooldown';
-            document.getElementById('skillDesc4').textContent = `${cdRemain4}s cooldown remaining`;
+            document.getElementById('skillDesc4').textContent = uiText(`${cdRemain4}초 후 재사용`, `${cdRemain4}s cooldown remaining`);
         } else {
-            document.getElementById('skillBtn4').textContent = '✈️ Airstrike';
+            document.getElementById('skillBtn4').textContent = uiText('✈️ 공습', '✈️ Airstrike');
             document.getElementById('skillBtn4').className = 'skill-btn disabled';
-            document.getElementById('skillDesc4').textContent = `Requires 10 aircraft (current: ${acCount})`;
+            document.getElementById('skillDesc4').textContent = uiText(`함재기 10기 필요 (현재: ${acCount})`, `Requires 10 aircraft (current: ${acCount})`);
         }
 
         const slot7 = document.getElementById('skillSlot7');
@@ -3824,28 +3886,28 @@ function renderSingleUnitPanel(unit, options = {}) {
         const reconProgress = unit.producingReconAircraft
             ? Math.floor(Math.min(1, (Date.now() - unit.producingReconAircraft.startTime) / unit.producingReconAircraft.buildTime) * 100)
             : null;
-        document.getElementById('skillBtn7').textContent = '🛩️ Build Recon';
+        document.getElementById('skillBtn7').textContent = uiText('🛩️ 정찰기 생산', '🛩️ Build Recon');
         document.getElementById('skillBtn7').className = 'skill-btn' + ((!player || player.resources < RECON_AIRCRAFT_COST || reconQueueFull) ? ' disabled' : '');
-        document.getElementById('skillDesc7').textContent = `${RECON_AIRCRAFT_COST} energy / ${Math.round(RECON_AIRCRAFT_BUILD_TIME_MS / 1000)}s (stored: ${reconCount} / deployed: ${reconDeployedCount} / max ${RECON_AIRCRAFT_MAX_PER_CARRIER}) [queue: ${reconQueue.length}]${reconProgress !== null ? ` | building ${reconProgress}%` : ''}`;
+        document.getElementById('skillDesc7').textContent = uiText(`${RECON_AIRCRAFT_COST} 에너지 / ${Math.round(RECON_AIRCRAFT_BUILD_TIME_MS / 1000)}초 (보관: ${reconCount} / 출격: ${reconDeployedCount} / 최대 ${RECON_AIRCRAFT_MAX_PER_CARRIER}) [대기열: ${reconQueue.length}]${reconProgress !== null ? ` | 생산 ${reconProgress}%` : ''}`, `${RECON_AIRCRAFT_COST} energy / ${Math.round(RECON_AIRCRAFT_BUILD_TIME_MS / 1000)}s (stored: ${reconCount} / deployed: ${reconDeployedCount} / max ${RECON_AIRCRAFT_MAX_PER_CARRIER}) [queue: ${reconQueue.length}]${reconProgress !== null ? ` | building ${reconProgress}%` : ''}`);
 
         const slot8 = document.getElementById('skillSlot8');
         slot8.style.display = 'flex';
-        document.getElementById('skillBtn8').textContent = '🛩️ Launch Recon';
+        document.getElementById('skillBtn8').textContent = uiText('🛩️ 정찰기 출격', '🛩️ Launch Recon');
         document.getElementById('skillBtn8').className = 'skill-btn' + (reconCount <= 0 ? ' disabled' : '');
-        document.getElementById('skillDesc8').textContent = `Launch one recon craft to a target point, scout, then return to the carrier (stored: ${reconCount} / airborne: ${reconDeployedCount} / max simultaneous ${RECON_AIRCRAFT_MAX_PER_CARRIER})`;
+        document.getElementById('skillDesc8').textContent = uiText(`정찰기 1대를 목표 지점으로 보내 정찰 후 항공모함으로 복귀시킴 (보관: ${reconCount} / 비행 중: ${reconDeployedCount} / 동시 최대 ${RECON_AIRCRAFT_MAX_PER_CARRIER})`, `Launch one recon craft to a target point, scout, then return to the carrier (stored: ${reconCount} / airborne: ${reconDeployedCount} / max simultaneous ${RECON_AIRCRAFT_MAX_PER_CARRIER})`);
 
         if (unit.producingAircraft || acQueue.length > 0) {
             const acBar = document.getElementById('aircraftProgressBar');
             acBar.style.display = 'block';
             let queueIconsHtml = acQueue.map((item, idx) => {
                 const isFirst = idx === 0;
-                return `<span style="display:inline-block;width:24px;height:24px;text-align:center;line-height:24px;background:${isFirst ? QUEUE_HIGHLIGHT_BG : 'rgba(255,255,255,0.1)'};border:1px solid ${isFirst ? QUEUE_HIGHLIGHT_BORDER : '#555'};border-radius:3px;font-size:14px;" title="Aircraft">✈️</span>`;
+                return `<span style="display:inline-block;width:24px;height:24px;text-align:center;line-height:24px;background:${isFirst ? QUEUE_HIGHLIGHT_BG : 'rgba(255,255,255,0.1)'};border:1px solid ${isFirst ? QUEUE_HIGHLIGHT_BORDER : '#555'};border-radius:3px;font-size:14px;" title="${uiText('함재기', 'Aircraft')}">✈️</span>`;
             }).join('');
 
             if (unit.producingAircraft) {
                 const elapsed = Date.now() - unit.producingAircraft.startTime;
                 const progress = Math.min(1, elapsed / unit.producingAircraft.buildTime);
-                document.getElementById('aircraftProgressLabel').innerHTML = `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px;">${queueIconsHtml}</div>Building aircraft... ${Math.floor(progress * 100)}%`;
+                document.getElementById('aircraftProgressLabel').innerHTML = `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px;">${queueIconsHtml}</div>${uiText('함재기 생산 중...', 'Building aircraft...')} ${Math.floor(progress * 100)}%`;
                 document.getElementById('aircraftProgressFill').style.width = `${Math.floor(progress * 100)}%`;
             } else {
                 document.getElementById('aircraftProgressLabel').innerHTML = queueIconsHtml ? `<div style="display:flex;gap:4px;flex-wrap:wrap;">${queueIconsHtml}</div>` : '';
@@ -3862,6 +3924,22 @@ function removeWorkerBuildGrid() {
 
 function getWorkerBuildItems(categoryKey) {
     return (WORKER_BUILD_CATEGORIES[categoryKey] || WORKER_BUILD_CATEGORIES.general).items;
+}
+
+function getWorkerBuildCategoryLabel(categoryKey) {
+    const entry = WORKER_BUILD_CATEGORY_LABELS[categoryKey] || WORKER_BUILD_CATEGORY_LABELS.general;
+    return entry[getCurrentLanguage()] || entry.ko;
+}
+
+function getWorkerBuildItemText(type) {
+    const entry = WORKER_BUILD_ITEM_TEXT[type];
+    if (!entry) {
+        return {
+            name: getBuildingTypeName(type),
+            desc: ''
+        };
+    }
+    return entry[getCurrentLanguage()] || entry.ko;
 }
 
 function getOwnedCompletedBuildingCount(type) {
@@ -3890,6 +3968,30 @@ function canBuildWorkerStructure(type, player) {
 }
 
 function getProductionUnitSummary(unitType, pop) {
+    if (getCurrentLanguage() !== 'en') {
+        switch (unitType) {
+            case 'worker':
+                return `인구 ${pop} | 건설, 수리, 채집 담당`;
+            case 'destroyer':
+                return `인구 ${pop} | 기뢰 부설 및 잠수함 견제`;
+            case 'cruiser':
+                return `인구 ${pop} | 이지스 모드가 있는 중형 화력함`;
+            case 'frigate':
+                return `인구 ${pop} | 초반 해상 장악용 저비용 함선`;
+            case 'battleship':
+                return `인구 ${pop} | 장거리 주력 전투함`;
+            case 'carrier':
+                return `인구 ${pop} | 함재기와 정찰기를 운용`;
+            case 'submarine':
+                return `인구 ${pop} | 은밀한 기습과 압박`;
+            case 'assaultship':
+                return `인구 ${pop} | 상륙을 위해 일꾼과 발사차량 수송`;
+            case 'missile_launcher':
+                return `인구 ${pop} | 전개 후 전함 사거리로 함선과 SLBM에 현재 체력 50% 피해`;
+            default:
+                return `인구 ${pop}`;
+        }
+    }
     switch (unitType) {
         case 'worker':
             return `Pop ${pop} | Builds, repairs, and gathers`;
@@ -3919,8 +4021,8 @@ function ensureWorkerBuildCategoryBar() {
     if (!workerBuildMenu) return null;
     if (!workerBuildMenu.dataset.initialized) {
         workerBuildMenu.innerHTML = `
-            <button type="button" class="worker-build-tab" data-category="general">Core Structures</button>
-            <button type="button" class="worker-build-tab" data-category="advanced">Advanced Structures</button>
+            <button type="button" class="worker-build-tab" data-category="general">${getWorkerBuildCategoryLabel('general')}</button>
+            <button type="button" class="worker-build-tab" data-category="advanced">${getWorkerBuildCategoryLabel('advanced')}</button>
         `;
         workerBuildMenu.querySelectorAll('.worker-build-tab').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -3932,6 +4034,10 @@ function ensureWorkerBuildCategoryBar() {
         });
         workerBuildMenu.dataset.initialized = 'true';
     }
+    workerBuildMenu.querySelectorAll('.worker-build-tab').forEach(btn => {
+        const category = btn.getAttribute('data-category');
+        btn.textContent = getWorkerBuildCategoryLabel(category);
+    });
     workerBuildMenu.querySelectorAll('.worker-build-tab').forEach(btn => {
         btn.classList.toggle('active', btn.getAttribute('data-category') === gameState.workerBuildCategory);
     });
@@ -3954,9 +4060,9 @@ function showSkillsForType(focusType, selectedUnits) {
         const subs = selectedUnits.filter(u => u.type === 'submarine' && u.userId === gameState.userId);
         const slot1 = document.getElementById('skillSlot1');
         slot1.style.display = 'flex';
-        document.getElementById('skillBtn1').textContent = '🚀 Fire SLBM';
+        document.getElementById('skillBtn1').textContent = uiText('🚀 SLBM 발사', '🚀 Fire SLBM');
         document.getElementById('skillBtn1').className = 'skill-btn';
-        document.getElementById('skillDesc1').textContent = `Launches a nuclear strike with an 800 radius (stock: ${gameState.missiles || 0})`;
+        document.getElementById('skillDesc1').textContent = uiText(`반경 800의 핵공격 발사 (재고: ${gameState.missiles || 0})`, `Launches a nuclear strike with an 800 radius (stock: ${gameState.missiles || 0})`);
         document.getElementById('skillDesc1').className = 'skill-desc';
 
         // Slot 2: SLBM 적재 (multi)
@@ -3965,24 +4071,24 @@ function showSkillsForType(focusType, selectedUnits) {
         const totalLoaded = subs.reduce((sum, u) => sum + (u.loadedSlbms || 0), 0);
         const totalCapacity = subs.length * 3;
         const allFull = totalLoaded >= totalCapacity;
-        document.getElementById('skillBtn2').textContent = '📦 Load SLBM';
+        document.getElementById('skillBtn2').textContent = uiText('📦 SLBM 적재', '📦 Load SLBM');
         document.getElementById('skillBtn2').className = 'skill-btn' + (allFull ? ' disabled' : '');
         document.getElementById('skillDesc2').textContent = allFull
-            ? `Loaded ${totalLoaded}/${totalCapacity} - full`
-            : `Load missiles near a silo (${totalLoaded}/${totalCapacity} total loaded)`;
+            ? uiText(`적재 ${totalLoaded}/${totalCapacity} - 가득 참`, `Loaded ${totalLoaded}/${totalCapacity} - full`)
+            : uiText(`사일로 근처에서 미사일 적재 (${totalLoaded}/${totalCapacity} 총 적재)`, `Load missiles near a silo (${totalLoaded}/${totalCapacity} total loaded)`);
 
         // Slot 3: 은신 (multi)
         const slot3 = document.getElementById('skillSlot3');
         slot3.style.display = 'flex';
         const stealthCount = subs.filter(u => u.stealthActive).length;
         if (stealthCount > 0) {
-            document.getElementById('skillBtn3').textContent = '🫥 Decloak';
+            document.getElementById('skillBtn3').textContent = uiText('🫥 해제', '🫥 Decloak');
             document.getElementById('skillBtn3').className = 'skill-btn skill-active';
-            document.getElementById('skillDesc3').textContent = `${stealthCount}/${subs.length} submarines cloaked`;
+            document.getElementById('skillDesc3').textContent = uiText(`${stealthCount}/${subs.length} 잠수함 은신 중`, `${stealthCount}/${subs.length} submarines cloaked`);
         } else {
-            document.getElementById('skillBtn3').textContent = '🫥 Cloak';
+            document.getElementById('skillBtn3').textContent = uiText('🫥 은신', '🫥 Cloak');
             document.getElementById('skillBtn3').className = 'skill-btn';
-            document.getElementById('skillDesc3').textContent = `Cloak ${subs.length} selected submarines for 15 seconds (30 second cooldown)`;
+            document.getElementById('skillDesc3').textContent = uiText(`선택한 잠수함 ${subs.length}척을 15초간 은신 (재사용 대기시간 30초)`, `Cloak ${subs.length} selected submarines for 15 seconds (30 second cooldown)`);
         }
     } else if (focusType === 'battleship') {
         showBattleshipCombatStanceSkill(selectedUnits);
@@ -3994,21 +4100,21 @@ function showSkillsForType(focusType, selectedUnits) {
         const now = Date.now();
         const anyCooldown = selectableBattleships.some(u => u.aimedShotCooldownUntil && now < u.aimedShotCooldownUntil);
         if (selectableBattleships.length <= 0) {
-            document.getElementById('skillBtn5').textContent = '🎯 Precision Shot';
+            document.getElementById('skillBtn5').textContent = uiText('🎯 정밀 사격', '🎯 Precision Shot');
             document.getElementById('skillBtn5').className = 'skill-btn disabled';
-            document.getElementById('skillDesc5').textContent = 'Battleships in Aegis mode cannot use Precision Shot';
+            document.getElementById('skillDesc5').textContent = uiText('이지스 모드 전함은 정밀 사격을 사용할 수 없습니다', 'Battleships in Aegis mode cannot use Precision Shot');
         } else if (anyActive) {
-            document.getElementById('skillBtn5').textContent = '🎯 Precision Shot (Active)';
+            document.getElementById('skillBtn5').textContent = uiText('🎯 정밀 사격 (활성)', '🎯 Precision Shot (Active)');
             document.getElementById('skillBtn5').className = 'skill-btn skill-active';
-            document.getElementById('skillDesc5').textContent = 'The next attack from selected battleships gets double range, damage, and vision (16 second cooldown)';
+            document.getElementById('skillDesc5').textContent = uiText('선택한 전함의 다음 공격은 사거리, 피해, 시야가 2배가 됩니다 (재사용 대기시간 16초)', 'The next attack from selected battleships gets double range, damage, and vision (16 second cooldown)');
         } else if (anyCooldown) {
-            document.getElementById('skillBtn5').textContent = '🎯 Precision Shot (Cooldown)';
+            document.getElementById('skillBtn5').textContent = uiText('🎯 정밀 사격 (재사용 대기)', '🎯 Precision Shot (Cooldown)');
             document.getElementById('skillBtn5').className = 'skill-btn skill-cooldown';
-            document.getElementById('skillDesc5').textContent = 'The next attack from selected battleships gets double range, damage, and vision (16 second cooldown)';
+            document.getElementById('skillDesc5').textContent = uiText('선택한 전함의 다음 공격은 사거리, 피해, 시야가 2배가 됩니다 (재사용 대기시간 16초)', 'The next attack from selected battleships gets double range, damage, and vision (16 second cooldown)');
         } else {
-            document.getElementById('skillBtn5').textContent = '🎯 Precision Shot';
+            document.getElementById('skillBtn5').textContent = uiText('🎯 정밀 사격', '🎯 Precision Shot');
             document.getElementById('skillBtn5').className = 'skill-btn';
-            document.getElementById('skillDesc5').textContent = 'The next attack from selected battleships gets double range, damage, and vision (16 second cooldown)';
+            document.getElementById('skillDesc5').textContent = uiText('선택한 전함의 다음 공격은 사거리, 피해, 시야가 2배가 됩니다 (재사용 대기시간 16초)', 'The next attack from selected battleships gets double range, damage, and vision (16 second cooldown)');
         }
     } else if (focusType === 'carrier') {
         const carriers = selectedUnits.filter(u => u.type === 'carrier' && u.userId === gameState.userId);
@@ -4026,20 +4132,20 @@ function showSkillsForType(focusType, selectedUnits) {
             const player = gameState.players.get(gameState.userId);
             const slot3 = document.getElementById('skillSlot3');
             slot3.style.display = 'flex';
-            document.getElementById('skillBtn3').textContent = '✈️ Build Aircraft';
+            document.getElementById('skillBtn3').textContent = uiText('✈️ 함재기 생산', '✈️ Build Aircraft');
             document.getElementById('skillBtn3').className = 'skill-btn' + ((!player || player.resources < 100 || !anyCarrierCanBuildAircraft) ? ' disabled' : '');
-            document.getElementById('skillDesc3').textContent = `100 energy / 15s (stored: ${acCount} / deployed: ${deployedCount} / max 10) [queue: ${acQueueLen}]`;
+            document.getElementById('skillDesc3').textContent = uiText(`100 에너지 / 15초 (보관: ${acCount} / 출격: ${deployedCount} / 최대 10) [대기열: ${acQueueLen}]`, `100 energy / 15s (stored: ${acCount} / deployed: ${deployedCount} / max 10) [queue: ${acQueueLen}]`);
             const slot4 = document.getElementById('skillSlot4');
             slot4.style.display = 'flex';
             const anyAirstrikeReady = carriers.some(c => c.airstrikeReady) || gameState.username === 'JsonParc';
             if (anyAirstrikeReady) {
-                document.getElementById('skillBtn4').textContent = '✈️ Airstrike (Ready)';
+                document.getElementById('skillBtn4').textContent = uiText('✈️ 공습 (준비됨)', '✈️ Airstrike (Ready)');
                 document.getElementById('skillBtn4').className = 'skill-btn skill-active';
             } else {
-                document.getElementById('skillBtn4').textContent = '✈️ Airstrike';
+                document.getElementById('skillBtn4').textContent = uiText('✈️ 공습', '✈️ Airstrike');
                 document.getElementById('skillBtn4').className = 'skill-btn disabled';
             }
-            document.getElementById('skillDesc4').textContent = 'Consumes 10 aircraft to perform three area bombing passes';
+            document.getElementById('skillDesc4').textContent = uiText('함재기 10기를 소모해 3회 지역 폭격을 수행', 'Consumes 10 aircraft to perform three area bombing passes');
             if (carriers.length === selectedUnits.filter(u => u.type === 'carrier').length) {
                 const totalReconReady = carriers.reduce((sum, carrier) => sum + ((carrier.reconAircraft || []).length), 0);
                 const totalReconDeployed = carriers.reduce((sum, carrier) => sum + ((carrier.reconAircraftDeployed || []).length), 0);
@@ -4052,14 +4158,14 @@ function showSkillsForType(focusType, selectedUnits) {
                 });
                 const slot7 = document.getElementById('skillSlot7');
                 slot7.style.display = 'flex';
-                document.getElementById('skillBtn7').textContent = '🛩️ Build Recon';
+                document.getElementById('skillBtn7').textContent = uiText('🛩️ 정찰기 생산', '🛩️ Build Recon');
                 document.getElementById('skillBtn7').className = 'skill-btn' + ((!player || player.resources < RECON_AIRCRAFT_COST || !anyCarrierCanBuildRecon) ? ' disabled' : '');
-                document.getElementById('skillDesc7').textContent = `Recon on selected carriers: stored ${totalReconReady} / deployed ${totalReconDeployed} / queue ${totalReconQueue} / max ${RECON_AIRCRAFT_MAX_PER_CARRIER} each`;
+                document.getElementById('skillDesc7').textContent = uiText(`선택한 항공모함 정찰기: 보관 ${totalReconReady} / 출격 ${totalReconDeployed} / 대기열 ${totalReconQueue} / 함선당 최대 ${RECON_AIRCRAFT_MAX_PER_CARRIER}`, `Recon on selected carriers: stored ${totalReconReady} / deployed ${totalReconDeployed} / queue ${totalReconQueue} / max ${RECON_AIRCRAFT_MAX_PER_CARRIER} each`);
                 const slot8 = document.getElementById('skillSlot8');
                 slot8.style.display = 'flex';
-                document.getElementById('skillBtn8').textContent = '🛩️ Launch Recon';
+                document.getElementById('skillBtn8').textContent = uiText('🛩️ 정찰기 출격', '🛩️ Launch Recon');
                 document.getElementById('skillBtn8').className = 'skill-btn' + (totalReconReady <= 0 ? ' disabled' : '');
-                document.getElementById('skillDesc8').textContent = `Launch one recon craft from each selected carrier, up to ${RECON_AIRCRAFT_MAX_PER_CARRIER} active per carrier`;
+                document.getElementById('skillDesc8').textContent = uiText(`선택한 항공모함마다 정찰기 1대 출격, 함선당 동시 최대 ${RECON_AIRCRAFT_MAX_PER_CARRIER}`, `Launch one recon craft from each selected carrier, up to ${RECON_AIRCRAFT_MAX_PER_CARRIER} active per carrier`);
             }
         }
     } else if (focusType === 'assaultship') {
@@ -4068,33 +4174,33 @@ function showSkillsForType(focusType, selectedUnits) {
         slot3.style.display = 'flex';
         const totalLoaded = assaultShips.reduce((sum, unit) => sum + getAssaultShipLoadedUnitCount(unit), 0);
         const unloadReadyCount = assaultShips.filter(canUnloadFromAssaultShip).length;
-        document.getElementById('skillBtn3').textContent = '🚚 Unload Units';
+        document.getElementById('skillBtn3').textContent = uiText('🚚 유닛 하역', '🚚 Unload Units');
         document.getElementById('skillBtn3').className = 'skill-btn' + (unloadReadyCount > 0 ? '' : ' disabled');
-        document.getElementById('skillDesc3').textContent = `Loaded ${totalLoaded} / selected ${assaultShips.length} | ${unloadReadyCount} ships are touching land and can unload`;
+        document.getElementById('skillDesc3').textContent = uiText(`총 탑재 ${totalLoaded} / 선택 ${assaultShips.length} | ${unloadReadyCount}척이 육지에 닿아 하역 가능`, `Loaded ${totalLoaded} / selected ${assaultShips.length} | ${unloadReadyCount} ships are touching land and can unload`);
         showAssaultShipPickupSkill(selectedUnits);
     } else if (focusType === 'cruiser') {
         const slot6 = document.getElementById('skillSlot6');
         slot6.style.display = 'flex';
         const anyAegis = selectedUnits.some(u => u.type === 'cruiser' && u.aegisMode);
         if (anyAegis) {
-            document.getElementById('skillBtn6').textContent = '🛡️ Aegis Mode (Active)';
+            document.getElementById('skillBtn6').textContent = uiText('🛡️ 이지스 모드 (활성)', '🛡️ Aegis Mode (Active)');
             document.getElementById('skillBtn6').className = 'skill-btn skill-active';
         } else {
-            document.getElementById('skillBtn6').textContent = '🛡️ Aegis Mode';
+            document.getElementById('skillBtn6').textContent = uiText('🛡️ 이지스 모드', '🛡️ Aegis Mode');
             document.getElementById('skillBtn6').className = 'skill-btn';
         }
-        document.getElementById('skillDesc6').textContent = 'Toggle SLBM interception mode (25 vs ships, 50 vs SLBMs, 30% damage reduction, 60% shorter range)';
+        document.getElementById('skillDesc6').textContent = uiText('SLBM 요격 모드 전환 (함선 25, SLBM 50 피해 | 받는 피해 30% 감소 | 사거리 60% 감소)', 'Toggle SLBM interception mode (25 vs ships, 50 vs SLBMs, 30% damage reduction, 60% shorter range)');
     } else if (focusType === 'destroyer') {
         const slot7 = document.getElementById('skillSlot7');
         slot7.style.display = 'flex';
-        document.getElementById('skillBtn7').textContent = '🔍 Sonar Sweep';
+        document.getElementById('skillBtn7').textContent = uiText('🔍 소나 스윕', '🔍 Sonar Sweep');
         document.getElementById('skillBtn7').className = 'skill-btn';
-        document.getElementById('skillDesc7').textContent = 'Passive: auto-detect submarines and mines in vision | Active: 4800 vision for 10 seconds';
+        document.getElementById('skillDesc7').textContent = uiText('패시브: 시야 내 잠수함과 기뢰 자동 탐지 | 액티브: 10초간 시야 4800', 'Passive: auto-detect submarines and mines in vision | Active: 4800 vision for 10 seconds');
         const slot8 = document.getElementById('skillSlot8');
         slot8.style.display = 'flex';
-        document.getElementById('skillBtn8').textContent = '💣 Lay Mine';
+        document.getElementById('skillBtn8').textContent = uiText('💣 기뢰 설치', '💣 Lay Mine');
         document.getElementById('skillBtn8').className = 'skill-btn';
-        document.getElementById('skillDesc8').textContent = 'Place a mine at the clicked location';
+        document.getElementById('skillDesc8').textContent = uiText('클릭한 위치에 기뢰를 설치합니다', 'Place a mine at the clicked location');
     } else if (focusType === 'frigate') {
         showFrigateEngineOverdriveSkill(selectedUnits);
     } else if (focusType === 'missile_launcher') {
@@ -4106,19 +4212,19 @@ function showSkillsForType(focusType, selectedUnits) {
         const undeployingCount = launchers.filter(u => u.deployState === 'undeploying_stage1' || u.deployState === 'undeploying_stage2').length;
         const deployedCount = launchers.filter(u => u.deployState === 'deployed').length;
         if (mobileCount > 0) {
-            document.getElementById('skillBtn3').textContent = '🚛 Deploy';
+            document.getElementById('skillBtn3').textContent = uiText('🚛 전개', '🚛 Deploy');
             document.getElementById('skillBtn3').className = 'skill-btn';
         } else if (deployedCount > 0) {
-            document.getElementById('skillBtn3').textContent = '🚛 Undeploy';
+            document.getElementById('skillBtn3').textContent = uiText('🚛 해제', '🚛 Undeploy');
             document.getElementById('skillBtn3').className = 'skill-btn skill-active';
         } else if (deployingCount > 0 || undeployingCount > 0) {
-            document.getElementById('skillBtn3').textContent = '🚛 Deploying';
+            document.getElementById('skillBtn3').textContent = uiText('🚛 전개 중', '🚛 Deploying');
             document.getElementById('skillBtn3').className = 'skill-btn skill-cooldown disabled';
         } else {
-            document.getElementById('skillBtn3').textContent = '🚛 Deploy';
+            document.getElementById('skillBtn3').textContent = uiText('🚛 전개', '🚛 Deploy');
             document.getElementById('skillBtn3').className = 'skill-btn disabled';
         }
-        document.getElementById('skillDesc3').textContent = `Mobile ${mobileCount} / deploying ${deployingCount} / packing ${undeployingCount} / deployed ${deployedCount} | Once deployed: battleship range, 50% current HP damage to ships and SLBMs every 40s`;
+        document.getElementById('skillDesc3').textContent = uiText(`이동형 ${mobileCount} / 전개 중 ${deployingCount} / 해제 중 ${undeployingCount} / 전개 완료 ${deployedCount} | 전개 후: 40초마다 전함 사거리로 함선과 SLBM에 현재 체력 50% 피해`, `Mobile ${mobileCount} / deploying ${deployingCount} / packing ${undeployingCount} / deployed ${deployedCount} | Once deployed: battleship range, 50% current HP damage to ships and SLBMs every 40s`);
     }
 }
 
@@ -4192,8 +4298,8 @@ function updateSelectionInfo() {
             };
             const allowed = allowedUnits[building.type] || [];
             const unitIcons = { worker: '👷', destroyer: '🚢', cruiser: '⛴️', battleship: '🛳️', carrier: '🛫', assaultship: '🛶', submarine: '🔱', frigate: '⚔️', missile_launcher: '🚛' };
-            const unitCosts = { worker: 50, destroyer: 150, cruiser: 300, battleship: BATTLESHIP_COST, carrier: 800, assaultship: ASSAULT_SHIP_COST, submarine: 900, frigate: 120, missile_launcher: MISSILE_LAUNCHER_COST };
-            const unitPops = { worker: 1, destroyer: 2, cruiser: 3, battleship: 20, carrier: 6, assaultship: 5, submarine: 4, frigate: 1, missile_launcher: 2 };
+            const unitCosts = { worker: 50, destroyer: 150, cruiser: 300, battleship: BATTLESHIP_COST, carrier: CARRIER_COST, assaultship: ASSAULT_SHIP_COST, submarine: SUBMARINE_COST, frigate: 120, missile_launcher: MISSILE_LAUNCHER_COST };
+            const unitPops = { worker: 1, destroyer: 2, cruiser: 3, battleship: BATTLESHIP_POPULATION, carrier: CARRIER_POPULATION, assaultship: ASSAULT_SHIP_POPULATION, submarine: SUBMARINE_POPULATION, frigate: 1, missile_launcher: 2 };
             
             // Production buttons
             const btnContainer = document.getElementById('productionButtons');
@@ -4213,11 +4319,12 @@ function updateSelectionInfo() {
                     const cost = unitCosts[uType];
                     const pop = unitPops[uType];
                     const summary = getProductionUnitSummary(uType, pop);
+                    const energyLabel = getCurrentLanguage() === 'en' ? 'energy' : '에너지';
                     return `
                         <button class="prod-btn prod-btn-row" data-type="${uType}" data-building="${building.id}">
                             <span class="prod-btn-main">
                                 <span class="prod-btn-name">${getUnitTypeName(uType)}</span>
-                                <span class="prod-btn-cost">${cost} energy</span>
+                                <span class="prod-btn-cost">${cost} ${energyLabel}</span>
                             </span>
                             <span class="prod-btn-desc">${summary}</span>
                         </button>
@@ -4347,8 +4454,10 @@ function updateSelectionInfo() {
         if (buildContainer.getAttribute('data-category') !== gameState.workerBuildCategory) {
             buildContainer.setAttribute('data-category', gameState.workerBuildCategory);
             buildContainer.innerHTML = buildData.map(b => {
-                const descText = b.desc ? ` (${b.desc})` : '';
-                return `<button class="build-btn" data-type="${b.type}" data-cost="${b.cost}" style="width:calc(50% - 3px);padding:8px 4px;margin-bottom:0;font-size:12px;">${b.name}<br><small>${b.cost} energy${descText}</small></button>`;
+                const buildText = getWorkerBuildItemText(b.type);
+                const descText = buildText.desc ? ` (${buildText.desc})` : '';
+                const energyLabel = getCurrentLanguage() === 'en' ? 'energy' : '에너지';
+                return `<button class="build-btn" data-type="${b.type}" data-cost="${b.cost}" style="width:calc(50% - 3px);padding:8px 4px;margin-bottom:0;font-size:12px;">${buildText.name}<br><small>${b.cost} ${energyLabel}${descText}</small></button>`;
             }).join('');
             buildContainer.querySelectorAll('.build-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
@@ -4376,7 +4485,9 @@ function updateSelectionInfo() {
                 btn.classList.add('disabled');
             }
             if (buildingType === 'carbase' && !canBuildCarbase()) {
-                btn.title = 'Requires at least two Headquarters, Shipyards, Power Plants, Defense Towers, Naval Academies, and Missile Silos';
+                btn.title = getCurrentLanguage() === 'en'
+                    ? 'Requires at least two Headquarters, Shipyards, Power Plants, Defense Towers, Naval Academies, and Missile Silos'
+                    : '본부, 조선소, 발전소, 방어 타워, 해군 사관학교, 미사일 사일로를 각각 2개 이상 보유해야 합니다';
             }
         });
     }
@@ -7201,13 +7312,13 @@ function updateRankings() {
                     <div class="ranking-header-row">
                         <span class="rank-number">#${index + 1}</span>
                         <span class="ranking-faction-chip" style="background:${getMinimapEntityColor(rank.userId, 'unit', minimapEnemyColorMap)}"></span>
-                        <div class="username">${rank.username}${rank.isSelf ? ' (You)' : ''}</div>
+                        <div class="username">${rank.username}${rank.isSelf ? (getCurrentLanguage() === 'en' ? ' (You)' : ' (나)') : ''}</div>
                     </div>
                     <div class="stats">
-                        Score: ${Math.floor(rank.score)} | 
-                        Resources: ${Math.floor(rank.resources)} | 
-                        Pop: ${rank.population} | 
-                        Power: ${rank.combat_power}
+                        ${getCurrentLanguage() === 'en' ? 'Score' : '점수'}: ${Math.floor(rank.score)} | 
+                        ${getCurrentLanguage() === 'en' ? 'Resources' : '자원'}: ${Math.floor(rank.resources)} | 
+                        ${getCurrentLanguage() === 'en' ? 'Pop' : '인구'}: ${rank.population} | 
+                        ${getCurrentLanguage() === 'en' ? 'Power' : '전투력'}: ${rank.combat_power}
                     </div>
                 </div>
             `).join('');
@@ -7306,85 +7417,215 @@ if (loginPanel) {
 const ENABLE_AI_TRAINING_UI = true;
 const DEFAULT_AI_DIFFICULTY = 'normal';
 const AI_DIFFICULTY_SELECTION_ENABLED = true;
-const diffDescs = {
-    easy: 'Rule-based AI with slower decisions and lower expansion pressure',
-    normal: 'Standard rule-based AI',
-    hard: 'Reinforcement-learned AI with better tactics and skill usage',
-    expert: 'Top-end RL AI with resource bonus and faster decisions'
-};
-function applyEnglishUiCopy() {
-    document.documentElement.lang = 'en';
+function getCurrentLanguage() {
+    return document.documentElement.lang === 'en' ? 'en' : 'ko';
+}
+
+function uiText(ko, en) {
+    return getCurrentLanguage() === 'en' ? en : ko;
+}
+
+function getLocalizedLabel(map, key) {
+    const entry = map[key];
+    if (!entry) return key;
+    return entry[getCurrentLanguage()] || entry.ko || entry.en || key;
+}
+
+function getDifficultyDescriptions() {
+    return DIFFICULTY_DESCRIPTIONS[getCurrentLanguage()] || DIFFICULTY_DESCRIPTIONS.ko;
+}
+
+function captureSelectOptionTexts(select) {
+    if (!select) return [];
+    return Array.from(select.options).map(option => ({
+        value: option.value,
+        text: option.textContent
+    }));
+}
+
+function applySelectOptionTexts(select, options) {
+    if (!select) return;
+    const optionMap = new Map((options || []).map(option => [option.value, option.text]));
+    Array.from(select.options).forEach(option => {
+        if (optionMap.has(option.value)) option.textContent = optionMap.get(option.value);
+    });
+}
+
+function captureStaticUiSnapshot() {
     const usernameInput = document.getElementById('username');
-    if (usernameInput) usernameInput.placeholder = 'Enter commander name';
     const loginBtn = document.getElementById('loginBtn');
-    if (loginBtn) loginBtn.textContent = 'Enter Battle';
+    const resetBtn = document.getElementById('resetBtn');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const modeIndicator = document.getElementById('modeIndicator');
+    const targetLabel = document.getElementById('targetLabel');
+    const slbmInstructions = document.getElementById('slbmInstructions');
+    const airstrikeInstructions = document.getElementById('airstrikeInstructions');
+    const mineInstructions = document.getElementById('mineInstructions');
+    const rankingsToggle = document.getElementById('rankingsToggle');
+    const loginLabels = document.querySelectorAll('#loginScreen label');
+    const trainingTitle = document.querySelector('#trainingPanel .training-header h3');
+    const langToggle = document.getElementById('langToggle');
+    return {
+        usernamePlaceholder: usernameInput?.placeholder || '',
+        loginBtnText: loginBtn?.textContent || '',
+        resetBtnText: resetBtn?.textContent || '',
+        resetBtnTitle: resetBtn?.title || '',
+        logoutBtnText: logoutBtn?.textContent || '',
+        modeIndicatorText: modeIndicator?.textContent || '',
+        topHudLabels: Array.from(document.querySelectorAll('#topHud .hud-label')).map(label => label.textContent),
+        statLabels: Array.from(document.querySelectorAll('#unitStats .stat-label')).map(label => label.textContent),
+        targetLabelText: targetLabel?.textContent || '',
+        slbmInstructionsHtml: slbmInstructions?.innerHTML || '',
+        airstrikeInstructionsHtml: airstrikeInstructions?.innerHTML || '',
+        mineInstructionsHtml: mineInstructions?.innerHTML || '',
+        rankingsToggleHtml: rankingsToggle?.innerHTML || '',
+        loginLabels: Array.from(loginLabels).map(label => label.textContent),
+        serverOptions: captureSelectOptionTexts(document.getElementById('serverSelect')),
+        difficultyOptions: captureSelectOptionTexts(document.getElementById('aiDifficultySelect')),
+        trainingTitle: trainingTitle?.textContent || '',
+        trainStartBtnText: document.getElementById('trainStartBtn')?.textContent || '',
+        trainStopBtnText: document.getElementById('trainStopBtn')?.textContent || '',
+        trainFreezeBtnText: document.getElementById('trainFreezeBtn')?.textContent || '',
+        trainResetBtnText: document.getElementById('trainResetBtn')?.textContent || '',
+        langToggleText: langToggle?.textContent || '',
+        langToggleTitle: langToggle?.title || '',
+        langToggleAriaLabel: langToggle?.getAttribute('aria-label') || ''
+    };
+}
+
+const STATIC_UI_KO = captureStaticUiSnapshot();
+const STATIC_UI_EN = Object.freeze({
+    usernamePlaceholder: 'Enter commander name',
+    loginBtnText: 'Enter Battle',
+    resetBtnText: 'Reset Base',
+    resetBtnTitle: 'Reset your base and all saved data',
+    logoutBtnText: 'Logout',
+    modeIndicatorText: 'Attack mode (click a target)',
+    topHudLabels: Object.freeze(['Energy:', 'Missiles:', 'Population:', 'Combat Power:', 'Score:']),
+    statLabels: Object.freeze(['Damage', 'Range', 'HP', 'Kills']),
+    targetLabelText: 'No target',
+    slbmInstructionsHtml: '<strong>Select SLBM Target</strong><br>Click to fire the missile<br><small>Press ESC to cancel</small>',
+    airstrikeInstructionsHtml: '<strong>Select Airstrike Target</strong><br>Click to mark the bombing point<br><small>Press ESC to cancel</small>',
+    mineInstructionsHtml: '<strong>Select Mine Location</strong><br>Click to place a mine<br><small>Press ESC to cancel</small>',
+    rankingsToggleHtml: '🏆 Top 5 Ranking <span id="rankingsArrow">▶</span>',
+    loginLabels: Object.freeze(['Server', 'AI Difficulty']),
+    serverOptions: Object.freeze([
+        Object.freeze({ value: 'server1', text: 'Server 1' }),
+        Object.freeze({ value: 'server2', text: 'Server 2' })
+    ]),
+    difficultyOptions: Object.freeze(Object.entries(DIFFICULTY_OPTION_LABELS.en).map(([value, text]) => Object.freeze({ value, text }))),
+    trainingTitle: 'AI Training',
+    trainStartBtnText: 'Start Training',
+    trainStopBtnText: 'Stop',
+    trainFreezeBtnText: 'Lock',
+    trainResetBtnText: 'Reset'
+});
+
+function setElementText(id, text) {
+    const element = document.getElementById(id);
+    if (element != null && text != null) element.textContent = text;
+}
+
+function setElementHtml(id, html) {
+    const element = document.getElementById(id);
+    if (element != null && html != null) element.innerHTML = html;
+}
+
+function updateLanguageToggleButton() {
+    const button = document.getElementById('langToggle');
+    if (!button) return;
+    if (getCurrentLanguage() === 'en') {
+        button.textContent = '한/EN';
+        button.title = 'Switch language (Korean)';
+        button.setAttribute('aria-label', 'Switch language');
+    } else {
+        button.textContent = 'EN/한';
+        button.title = '언어 전환 (영어)';
+        button.setAttribute('aria-label', '언어 전환');
+    }
+}
+
+function applyStaticUiCopy(lang) {
+    const snapshot = lang === 'en' ? STATIC_UI_EN : STATIC_UI_KO;
+    const usernameInput = document.getElementById('username');
+    if (usernameInput) usernameInput.placeholder = snapshot.usernamePlaceholder;
+
+    setElementText('loginBtn', snapshot.loginBtnText);
+
     const resetBtn = document.getElementById('resetBtn');
     if (resetBtn) {
-        resetBtn.textContent = 'Reset Base';
-        resetBtn.title = 'Reset your base and all saved data';
+        resetBtn.textContent = snapshot.resetBtnText;
+        resetBtn.title = snapshot.resetBtnTitle;
     }
-    const logoutBtn = document.getElementById('logoutBtn');
-    if (logoutBtn) logoutBtn.textContent = 'Logout';
-    const modeIndicator = document.getElementById('modeIndicator');
-    if (modeIndicator) modeIndicator.textContent = 'Attack mode (click a target)';
-    const topHudLabels = ['Energy:', 'Missiles:', 'Population:', 'Combat Power:', 'Score:'];
+
+    setElementText('logoutBtn', snapshot.logoutBtnText);
+    setElementText('modeIndicator', snapshot.modeIndicatorText);
+
     document.querySelectorAll('#topHud .hud-label').forEach((label, index) => {
-        if (topHudLabels[index]) label.textContent = topHudLabels[index];
+        if (snapshot.topHudLabels[index]) label.textContent = snapshot.topHudLabels[index];
     });
-    const statLabels = ['Damage', 'Range', 'HP', 'Kills'];
     document.querySelectorAll('#unitStats .stat-label').forEach((label, index) => {
-        if (statLabels[index]) label.textContent = statLabels[index];
+        if (snapshot.statLabels[index]) label.textContent = snapshot.statLabels[index];
     });
-    const targetLabel = document.getElementById('targetLabel');
-    if (targetLabel) targetLabel.textContent = 'No target';
-    const slbmInstructions = document.getElementById('slbmInstructions');
-    if (slbmInstructions) {
-        slbmInstructions.innerHTML = '<strong>Select SLBM Target</strong><br>Click to fire the missile<br><small>Press ESC to cancel</small>';
-    }
-    const airstrikeInstructions = document.getElementById('airstrikeInstructions');
-    if (airstrikeInstructions) {
-        airstrikeInstructions.innerHTML = '<strong>Select Airstrike Target</strong><br>Click to mark the bombing point<br><small>Press ESC to cancel</small>';
-    }
-    const mineInstructions = document.getElementById('mineInstructions');
-    if (mineInstructions) {
-        mineInstructions.innerHTML = '<strong>Select Mine Location</strong><br>Click to place a mine<br><small>Press ESC to cancel</small>';
-    }
-    const rankingsToggle = document.getElementById('rankingsToggle');
-    if (rankingsToggle) {
-        rankingsToggle.innerHTML = '🏆 Top 5 Ranking <span id="rankingsArrow">▶</span>';
-    }
+
+    setElementText('targetLabel', snapshot.targetLabelText);
+    setElementHtml('slbmInstructions', snapshot.slbmInstructionsHtml);
+    setElementHtml('airstrikeInstructions', snapshot.airstrikeInstructionsHtml);
+    setElementHtml('mineInstructions', snapshot.mineInstructionsHtml);
+    setElementHtml('rankingsToggle', snapshot.rankingsToggleHtml);
+
     const loginLabels = document.querySelectorAll('#loginScreen label');
-    if (loginLabels[0]) loginLabels[0].textContent = 'Server';
-    if (loginLabels[1]) loginLabels[1].textContent = 'AI Difficulty';
-    const serverSelect = document.getElementById('serverSelect');
-    if (serverSelect) {
-        const serverMap = { server1: 'Server 1', server2: 'Server 2' };
-        Array.from(serverSelect.options).forEach(option => {
-            option.textContent = serverMap[option.value] || option.textContent;
-        });
-    }
-    if (diffSelect) {
-        const difficultyMap = {
-            easy: 'Easy - Casual',
-            normal: 'Normal - Standard AI',
-            hard: 'Hard - RL AI',
-            expert: 'Expert - Elite RL AI'
-        };
-        Array.from(diffSelect.options).forEach(option => {
-            option.textContent = difficultyMap[option.value] || option.textContent;
-        });
-    }
+    snapshot.loginLabels.forEach((text, index) => {
+        if (loginLabels[index]) loginLabels[index].textContent = text;
+    });
+
+    applySelectOptionTexts(document.getElementById('serverSelect'), snapshot.serverOptions);
+    applySelectOptionTexts(document.getElementById('aiDifficultySelect'), snapshot.difficultyOptions);
+
     const trainingTitle = document.querySelector('#trainingPanel .training-header h3');
-    if (trainingTitle) trainingTitle.textContent = 'AI Training';
-    const trainStartBtn = document.getElementById('trainStartBtn');
-    if (trainStartBtn) trainStartBtn.textContent = 'Start Training';
-    const trainStopBtn = document.getElementById('trainStopBtn');
-    if (trainStopBtn) trainStopBtn.textContent = 'Stop';
-    const trainFreezeBtn = document.getElementById('trainFreezeBtn');
-    if (trainFreezeBtn) trainFreezeBtn.textContent = 'Lock';
-    const trainResetBtn = document.getElementById('trainResetBtn');
-    if (trainResetBtn) trainResetBtn.textContent = 'Reset';
+    if (trainingTitle) trainingTitle.textContent = snapshot.trainingTitle;
+    setElementText('trainStartBtn', snapshot.trainStartBtnText);
+    setElementText('trainStopBtn', snapshot.trainStopBtnText);
+    setElementText('trainFreezeBtn', snapshot.trainFreezeBtnText);
+    setElementText('trainResetBtn', snapshot.trainResetBtnText);
+
+    updateLanguageToggleButton();
+    ensureWorkerBuildCategoryBar();
 }
+
+function readStoredUiLanguage() {
+    try {
+        const saved = localStorage.getItem(UI_LANGUAGE_STORAGE_KEY);
+        return saved === 'en' ? 'en' : 'ko';
+    } catch (error) {
+        return getCurrentLanguage();
+    }
+}
+
+function applyLanguage(lang) {
+    const nextLang = lang === 'en' ? 'en' : 'ko';
+    document.documentElement.lang = nextLang;
+    try {
+        localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, nextLang);
+    } catch (error) {
+        console.warn('Failed to persist UI language:', error);
+    }
+
+    applyStaticUiCopy(nextLang);
+
+    if (diffDesc) {
+        diffDesc.textContent = getDifficultyDescriptions()[getSelectedAIDifficulty()] || '';
+    }
+    if (gameState.selection && gameState.selection.size > 0) {
+        updateSelectionInfo();
+    }
+    updateRankings();
+}
+
+window.applyLanguage = applyLanguage;
+window.toggleLanguage = function toggleLanguage() {
+    applyLanguage(getCurrentLanguage() === 'en' ? 'ko' : 'en');
+};
 const diffField = document.getElementById('aiDifficultyField');
 const diffSelect = document.getElementById('aiDifficultySelect');
 const diffDesc = document.getElementById('difficultyDesc');
@@ -7397,14 +7638,14 @@ if (diffField && !AI_DIFFICULTY_SELECTION_ENABLED) {
 }
 if (diffSelect && diffDesc) {
     diffSelect.value = getSelectedAIDifficulty();
-    diffDesc.textContent = diffDescs[getSelectedAIDifficulty()] || '';
+    diffDesc.textContent = getDifficultyDescriptions()[getSelectedAIDifficulty()] || '';
     if (AI_DIFFICULTY_SELECTION_ENABLED) {
         diffSelect.addEventListener('change', () => {
-            diffDesc.textContent = diffDescs[diffSelect.value] || '';
+            diffDesc.textContent = getDifficultyDescriptions()[diffSelect.value] || '';
         });
     }
 }
-applyEnglishUiCopy();
+applyLanguage(readStoredUiLanguage());
 
 document.getElementById('loginBtn').addEventListener('click', login);
 document.getElementById('logoutBtn').addEventListener('click', logout);
@@ -7873,9 +8114,9 @@ function connectToGame() {
         console.log('Received init data:', data);
         
         // Set AI difficulty (first human player sets it)
-        if (diffSelect && data && data.aiDifficulty && diffDescs[data.aiDifficulty]) {
+        if (diffSelect && data && data.aiDifficulty && getDifficultyDescriptions()[data.aiDifficulty]) {
             diffSelect.value = AI_DIFFICULTY_SELECTION_ENABLED ? data.aiDifficulty : DEFAULT_AI_DIFFICULTY;
-            if (diffDesc) diffDesc.textContent = diffDescs[diffSelect.value] || '';
+            if (diffDesc) diffDesc.textContent = getDifficultyDescriptions()[diffSelect.value] || '';
         }
         socket.emit('setAIDifficulty', { difficulty: getSelectedAIDifficulty() });
         
