@@ -15,6 +15,18 @@ services:
         generateValue: true
       - key: DB_PATH
         value: /var/data/game.db
+      - key: MW_ENABLE_AI_TRAINING
+        value: "0"
+      - key: MW_ENABLE_AI_TRAINING_UI
+        value: "0"
+      - key: MW_ALLOW_AI_DIFFICULTY_SELECTION
+        value: "0"
+      - key: MW_ALLOW_RL_WEIGHT_LOADING
+        value: "0"
+      - key: MW_PRELOAD_RL_ON_START
+        value: "0"
+      - key: MW_ALLOW_RL_WEIGHT_UPDATES
+        value: "0"
     disk:
       name: mw-craft-data
       mountPath: /var/data

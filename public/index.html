@@ -289,7 +289,23 @@
     }
     window.toggleLanguage = toggleLanguage;
     </script>
-    <script src="game.js?v=lang_fix_v4"></script>
+    <script src="/runtime-config.js"></script>
+    <script>
+    (function() {
+        var cfg = window.MW_RUNTIME_CONFIG || {};
+        if (cfg.allowAiDifficultySelection !== true) {
+            var field = document.getElementById('aiDifficultyField');
+            if (field) field.style.display = 'none';
+            var select = document.getElementById('aiDifficultySelect');
+            if (select && cfg.defaultAiDifficulty) select.value = cfg.defaultAiDifficulty;
+        }
+        if (cfg.enableAiTrainingUi !== true) {
+            var panel = document.getElementById('trainingPanel');
+            if (panel) panel.style.display = 'none';
+        }
+    })();
+    </script>
+    <script src="game.js?v=deploy_ai_off_v1"></script>
 
 </body>
 </html>

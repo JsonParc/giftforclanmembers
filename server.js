@@ -13,10 +13,18 @@ const { createAiProductionHelpers } = require('./lib/server/ai-production');
 const { scoreShipyardUnitChoice, scoreAcademyUnitChoice } = require('./lib/server/ai-unit-scoring');
 const { createAiTargetingHelpers } = require('./lib/server/ai-targeting');
 
-const ENABLE_AI_TRAINING = true;
+function isEnvEnabled(name, defaultValue = false) {
+  const rawValue = process.env[name];
+  if (rawValue == null || rawValue === '') return defaultValue;
+  return rawValue === '1' || String(rawValue).toLowerCase() === 'true';
+}
+
+const IS_RENDER_ENV = String(process.env.RENDER || '').toLowerCase() === 'true';
+const AI_FEATURES_ENABLED_BY_DEFAULT = !IS_RENDER_ENV;
+const ENABLE_AI_TRAINING = isEnvEnabled('MW_ENABLE_AI_TRAINING', AI_FEATURES_ENABLED_BY_DEFAULT);
 const BENCHMARK_MODE = process.env.MW_BENCHMARK === '1';
-const RL_WEIGHT_UPDATES_ENABLED = process.env.MW_ALLOW_RL_WEIGHT_UPDATES === '1';
-const RL_PRELOAD_ON_START = process.env.MW_PRELOAD_RL_ON_START !== '0';
+const RL_WEIGHT_UPDATES_ENABLED = ENABLE_AI_TRAINING && isEnvEnabled('MW_ALLOW_RL_WEIGHT_UPDATES', false);
+const RL_PRELOAD_ON_START = ENABLE_AI_TRAINING && isEnvEnabled('MW_PRELOAD_RL_ON_START', AI_FEATURES_ENABLED_BY_DEFAULT);
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
@@ -28,8 +36,9 @@ const RL_EPISODE_CAPS = Object.freeze({
   expert: 2000000
 });
 const DEFAULT_AI_DIFFICULTY = 'normal';
-const ALLOW_AI_DIFFICULTY_SELECTION = true;
-const ALLOW_RL_WEIGHT_LOADING = true;
+const ALLOW_AI_DIFFICULTY_SELECTION = isEnvEnabled('MW_ALLOW_AI_DIFFICULTY_SELECTION', AI_FEATURES_ENABLED_BY_DEFAULT);
+const ALLOW_RL_WEIGHT_LOADING = ENABLE_AI_TRAINING && isEnvEnabled('MW_ALLOW_RL_WEIGHT_LOADING', AI_FEATURES_ENABLED_BY_DEFAULT);
+const ENABLE_AI_TRAINING_UI = ENABLE_AI_TRAINING && isEnvEnabled('MW_ENABLE_AI_TRAINING_UI', AI_FEATURES_ENABLED_BY_DEFAULT);
 const EMPTY_TRAINING_STATS = Object.freeze({
   episodes: 0,
   states: 0,
@@ -2786,6 +2795,17 @@ app.use((req, res, next) => {
     return next();
   }
   return res.status(404).send('Not found');
+});
+
+app.get('/runtime-config.js', (req, res) => {
+  res.type('application/javascript');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  const payload = {
+    enableAiTrainingUi: ENABLE_AI_TRAINING_UI,
+    allowAiDifficultySelection: ALLOW_AI_DIFFICULTY_SELECTION,
+    defaultAiDifficulty: DEFAULT_AI_DIFFICULTY
+  };
+  res.send(`window.MW_RUNTIME_CONFIG = ${JSON.stringify(payload)};`);
 });
 
 app.use(express.static('public', { etag: false, maxAge: 0, lastModified: false }));
@@ -6992,6 +7012,7 @@ io.on('connection', (socket) => {
   socket.on('setAIDifficulty', (data) => {
     switchRoom(socket.roomId);
     if (!gameState) return;
+    if (!ALLOW_AI_DIFFICULTY_SELECTION) return;
     const difficulty = getEffectiveAIDifficulty(data && data.difficulty);
     gameState.aiDifficulty = difficulty;
     io.to(socket.roomId).emit('aiDifficultyChanged', { difficulty, label: DIFFICULTY_PRESETS[difficulty].label });
