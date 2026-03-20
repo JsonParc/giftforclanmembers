@@ -23,6 +23,10 @@ const io = socketIo(server);
 
 const aiTraining = ENABLE_AI_TRAINING ? require('./ai-training') : null;
 const RL_SESSION_DIFFICULTIES = Object.freeze(['hard', 'expert']);
+const RL_EPISODE_CAPS = Object.freeze({
+  hard: 1000000,
+  expert: 2000000
+});
 const DEFAULT_AI_DIFFICULTY = 'normal';
 const ALLOW_AI_DIFFICULTY_SELECTION = true;
 const ALLOW_RL_WEIGHT_LOADING = true;
@@ -175,7 +179,8 @@ const MISSILE_LAUNCHER_COST = 2200;
 const MISSILE_LAUNCHER_BUILD_TIME_MS = 27000;
 const MISSILE_LAUNCHER_DEPLOY_STAGE_MS = 1000;
 const MISSILE_LAUNCHER_DEPLOYED_RANGE = 2500;
-const BATTLESHIP_COST = 2400;
+const BATTLESHIP_COST = 1400;
+const BATTLESHIP_POPULATION = 10;
 const CARRIER_COST = 1600;
 const SUBMARINE_COST = 1800;
 const ASSAULT_SHIP_COST = 1000;
@@ -224,6 +229,8 @@ const BATTLESHIP_AEGIS_TAKEN_DAMAGE_MULTIPLIER = 1.40;
 const BATTLESHIP_AEGIS_TURRET_COOLDOWN_MS = 480;
 // Add more usernames here to allow default <-> yamato battleship skin switching.
 const YAMATO_BATTLESHIP_SKIN_ALLOWED_USERNAMES = new Set(['JsonParc']);
+const F127_FRIGATE_SKIN_ALLOWED_USERNAMES = new Set(['cherry']);
+const NUKE_LEO_DESTROYER_SKIN_ALLOWED_USERNAMES = new Set(['Nucleotide']);
 // Human matches involving these accounts are excluded from live RL data collection.
 const AI_TRAINING_DATA_EXCLUDED_USERNAMES = new Set(['JsonParc']);
 const OBSERVER_LOGIN_USERNAME = 'observer';
@@ -977,6 +984,26 @@ function canUserIdUseYamatoBattleshipSkin(userId) {
   return !!(player && canUsernameUseYamatoBattleshipSkin(player.username));
 }
 
+function canUsernameUseF127FrigateSkin(username) {
+  return !!(username && F127_FRIGATE_SKIN_ALLOWED_USERNAMES.has(username));
+}
+
+function canUserIdUseF127FrigateSkin(userId) {
+  if (userId == null) return false;
+  const player = gameState.players.get(userId);
+  return !!(player && canUsernameUseF127FrigateSkin(player.username));
+}
+
+function canUsernameUseNukeLeoDestroyerSkin(username) {
+  return !!(username && NUKE_LEO_DESTROYER_SKIN_ALLOWED_USERNAMES.has(username));
+}
+
+function canUserIdUseNukeLeoDestroyerSkin(userId) {
+  if (userId == null) return false;
+  const player = gameState.players.get(userId);
+  return !!(player && canUsernameUseNukeLeoDestroyerSkin(player.username));
+}
+
 function isExcludedFromAITrainingDataCollection(player) {
   return !!(
     player &&
@@ -1195,10 +1222,18 @@ function initializeUnitRuntimeState(unit) {
     refreshBattleshipModeState(unit);
   }
   if (unit.type === 'frigate') {
+    if (unit.frigateSkinVariant !== 'f127' && unit.frigateSkinVariant !== 'default') {
+      unit.frigateSkinVariant = canUserIdUseF127FrigateSkin(unit.userId) ? 'f127' : 'default';
+    }
     unit.engineOverdriveActive = !!unit.engineOverdriveActive;
     unit.engineOverdriveLastTickAt = Number.isFinite(unit.engineOverdriveLastTickAt) ? unit.engineOverdriveLastTickAt : null;
     if (!unit.squadId) {
       refreshFrigateEngineOverdrive(unit);
+    }
+  }
+  if (unit.type === 'destroyer') {
+    if (unit.destroyerSkinVariant !== 'nuke-leo' && unit.destroyerSkinVariant !== 'default') {
+      unit.destroyerSkinVariant = canUserIdUseNukeLeoDestroyerSkin(unit.userId) ? 'nuke-leo' : 'default';
     }
   }
   if (unit.type === 'submarine') {
@@ -1701,8 +1736,8 @@ const UNIT_DEFINITIONS = {
     buildTime: 20500
   },
   battleship: {
-    cost: 2400,
-    pop: 20,
+    cost: BATTLESHIP_COST,
+    pop: BATTLESHIP_POPULATION,
     hp: 2400,
     damage: 260,
     speed: 6,
@@ -2157,6 +2192,8 @@ function buildClientPlayersPayload() {
       userId: player.userId,
       username: player.username,
       yamatoBattleshipSkinEligible: canUsernameUseYamatoBattleshipSkin(player.username),
+      f127FrigateSkinEligible: canUsernameUseF127FrigateSkin(player.username),
+      nukeLeoDestroyerSkinEligible: canUsernameUseNukeLeoDestroyerSkin(player.username),
       resources: player.resources,
       population: player.population,
       maxPopulation: player.maxPopulation,
@@ -2224,6 +2261,7 @@ function buildClientUnitsPayload(filterFn = null) {
       if (unit.evasionChance) u.evasionChance = unit.evasionChance;
     }
     if (t === 'frigate') {
+      u.frigateSkinVariant = unit.frigateSkinVariant === 'f127' ? 'f127' : 'default';
       u.engineOverdriveActive = !!unit.engineOverdriveActive;
       if (unit.evasionChance) u.evasionChance = unit.evasionChance;
     }
@@ -2246,6 +2284,7 @@ function buildClientUnitsPayload(filterFn = null) {
       if (unit.stealthCooldownUntil) u.stealthCooldownUntil = unit.stealthCooldownUntil;
     }
     if (t === 'destroyer') {
+      u.destroyerSkinVariant = unit.destroyerSkinVariant === 'nuke-leo' ? 'nuke-leo' : 'default';
       if (unit.searchCooldownUntil) u.searchCooldownUntil = unit.searchCooldownUntil;
       if (unit.searchActiveUntil) u.searchActiveUntil = unit.searchActiveUntil;
     }
@@ -2253,8 +2292,8 @@ function buildClientUnitsPayload(filterFn = null) {
       if (unit.deployState) u.deployState = unit.deployState;
       if (unit.deployStateEndsAt) u.deployStateEndsAt = unit.deployStateEndsAt;
     }
-    if (t === 'assault_ship') {
-      if (unit.loadedMissileLaunchers && unit.loadedMissileLaunchers.length) u.loadedMissileLaunchers = unit.loadedMissileLaunchers;
+    if (t === 'assaultship') {
+      u.loadedMissileLaunchers = Array.isArray(unit.loadedMissileLaunchers) ? unit.loadedMissileLaunchers : [];
     }
     if (t === 'mine') u.isMine = true;
     units.push(u);
@@ -5853,7 +5892,8 @@ app.post('/api/ai-training/start', async (req, res) => {
   if (!RL_SESSION_DIFFICULTIES.includes(diff)) return res.status(400).json({ error: 'Invalid difficulty' });
   const session = await ensureTrainingSessionLoaded(diff);
   if (!session) return res.status(503).json({ error: 'Training unavailable in benchmark mode' });
-  const episodes = Math.min(Math.max(parseInt(req.body.episodes) || 500, 10), 999999);
+  const episodeCap = RL_EPISODE_CAPS[diff] || 1000000;
+  const episodes = Math.min(Math.max(parseInt(req.body.episodes) || 500, 10), episodeCap);
   const continuous = !!req.body.continuous;
   const mode = req.body.mode || 'solo'; // 'solo' or 'selfplay'
   const numAgents = Math.min(Math.max(parseInt(req.body.numAgents) || 4, 2), 8);
@@ -5915,11 +5955,7 @@ app.post('/api/ai-training/reset', async (req, res) => {
   if (!session) return res.status(503).json({ error: 'Training unavailable in benchmark mode' });
   session.continuousMode = false;
   session.stopTraining();
-  session.qTable.table = {};
-  session.qTable.epsilon = 0.3;
-  session.qTable.totalEpisodes = 0;
-  session.qTable.totalReward = 0;
-  session.qTable.recentRewards = [];
+  session.qTable.reset();
   session.saveWeights();
   console.log(`[AI-RL][${diff}] Weights reset`);
   res.json({ reset: true, difficulty: diff });
@@ -6806,6 +6842,12 @@ io.on('connection', (socket) => {
     const { buildingId, unitType } = data;
     buildUnit(socket.userId, buildingId, unitType);
   });
+
+  socket.on('cancelUnitProduction', (data) => {
+    switchRoom(socket.roomId);
+    const { buildingId } = data;
+    cancelLatestUnitProduction(socket.userId, buildingId);
+  });
   
   socket.on('buildBuilding', (data) => {
     switchRoom(socket.roomId);
@@ -7331,6 +7373,28 @@ io.on('connection', (socket) => {
     if (skinVariant === 'yamato' && !canUsernameUseYamatoBattleshipSkin(socket.username)) return;
     initializeUnitRuntimeState(unit);
     unit.battleshipSkinVariant = skinVariant;
+  });
+
+  socket.on('setFrigateSkinVariant', (data) => {
+    switchRoom(socket.roomId);
+    const { unitId, skinVariant } = data || {};
+    const unit = gameState.units.get(unitId);
+    if (!unit || unit.userId !== socket.userId || unit.type !== 'frigate') return;
+    if (skinVariant !== 'f127' && skinVariant !== 'default') return;
+    if (skinVariant === 'f127' && !canUsernameUseF127FrigateSkin(socket.username)) return;
+    initializeUnitRuntimeState(unit);
+    unit.frigateSkinVariant = skinVariant;
+  });
+
+  socket.on('setDestroyerSkinVariant', (data) => {
+    switchRoom(socket.roomId);
+    const { unitId, skinVariant } = data || {};
+    const unit = gameState.units.get(unitId);
+    if (!unit || unit.userId !== socket.userId || unit.type !== 'destroyer') return;
+    if (skinVariant !== 'nuke-leo' && skinVariant !== 'default') return;
+    if (skinVariant === 'nuke-leo' && !canUsernameUseNukeLeoDestroyerSkin(socket.username)) return;
+    initializeUnitRuntimeState(unit);
+    unit.destroyerSkinVariant = skinVariant;
   });
 
   socket.on('toggleFrigateEngineOverdrive', (data) => {
@@ -7973,6 +8037,54 @@ function savePlayerData(userId) {
 }
 
 // Build unit
+function getQueuedUnitRefundData(queuedItem) {
+  const unitType = queuedItem?.unitType;
+  if (!unitType || !Object.prototype.hasOwnProperty.call(UNIT_DEFINITIONS, unitType)) return null;
+  const unitConfig = getUnitDefinition(unitType);
+  return {
+    unitType,
+    cost: Math.max(0, Math.floor(Number.isFinite(queuedItem?.cost) ? queuedItem.cost : (unitConfig.cost || 0))),
+    pop: Math.max(0, Math.floor(Number.isFinite(queuedItem?.pop) ? queuedItem.pop : (unitConfig.pop || 0)))
+  };
+}
+
+function cancelLatestUnitProduction(userId, buildingId) {
+  const building = gameState.buildings.get(buildingId);
+  const player = gameState.players.get(userId);
+
+  if (!building || building.userId !== userId || !player) return false;
+  if (building.buildProgress < 100) return false;
+
+  if (!Array.isArray(building.productionQueue)) building.productionQueue = [];
+  const queue = building.productionQueue;
+  const latestItem = queue.length > 0 ? queue[queue.length - 1] : building.producing;
+  const refund = getQueuedUnitRefundData(latestItem);
+  if (!refund) return false;
+
+  if (queue.length > 0) {
+    queue.pop();
+  } else {
+    building.producing = null;
+  }
+
+  player.resources += refund.cost;
+  player.population = Math.max(0, player.population - refund.pop);
+
+  if (queue.length === 0) {
+    building.producing = null;
+  } else if (!building.producing) {
+    const next = queue[0];
+    building.producing = {
+      unitType: next.unitType,
+      startTime: Date.now(),
+      buildTime: next.buildTime,
+      userId: next.userId
+    };
+  }
+
+  return true;
+}
+
 function buildUnit(userId, buildingId, unitType) {
   const building = gameState.buildings.get(buildingId);
   const player = gameState.players.get(userId);
@@ -8006,7 +8118,9 @@ function buildUnit(userId, buildingId, unitType) {
     building.productionQueue.push({
       unitType: unitType,
       buildTime: unitConfig.buildTime || 10000,
-      userId: userId
+      userId: userId,
+      cost: unitConfig.cost || 0,
+      pop: unitConfig.pop || 0
     });
     
     // If nothing currently producing, start it

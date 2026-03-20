@@ -7,11 +7,11 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>MW Craft</title>
-    <link rel="stylesheet" href="style.css?v=pixelify_en_v1">
+    <link rel="stylesheet" href="style.css?v=lang_fix_v2">
 </head>
 <body>
     <!-- AI Training Panel (admin - outside any screen so it's always accessible) -->
-    <div id="trainingPanel" style="display:none;">
+    <div id="trainingPanel" style="display:none;" translate="no" class="notranslate">
         <div class="training-header">
             <h3>🧠 AI 강화학습</h3>
             <button id="trainingCloseBtn" class="training-close">&times;</button>
@@ -57,10 +57,11 @@
                 <button class="train-preset-btn" data-episodes="5000">🔥 5,000회</button>
                 <button class="train-preset-btn" data-episodes="50000">💪 50,000회</button>
                 <button class="train-preset-btn" data-episodes="200000">🏆 200,000회</button>
+                <button class="train-preset-btn" data-episodes="1000000">🚀 1,000,000회</button>
             </div>
             <div class="training-controls">
                 <label style="color:#aaa;font-size:12px;">에피소드:</label>
-                <input type="number" id="trainEpisodeInput" value="5000" min="10" max="999999" style="width:90px;padding:4px;background:#1a1f25;color:#fff;border:1px solid #555;border-radius:4px;">
+                <input type="number" id="trainEpisodeInput" value="5000" min="10" max="2000000" style="width:90px;padding:4px;background:#1a1f25;color:#fff;border:1px solid #555;border-radius:4px;">
                 <button id="trainStartBtn" class="train-btn train-start">학습 시작</button>
                 <button id="trainStopBtn" class="train-btn train-stop" disabled>중단</button>
             </div>
@@ -76,7 +77,7 @@
     </div>
 
     <!-- Login Screen -->
-    <div id="loginScreen" class="screen active">
+    <div id="loginScreen" class="screen active notranslate" translate="no">
         <div class="login-container">
             <h1>MW Craft</h1>
             <div class="login-form">
@@ -130,7 +131,7 @@
                 <span id="score">0</span>
             </div>
             <button id="aiAddZone" type="button" style="display:none;padding:8px 12px;border-radius:8px;border:1px solid #6f93b7;background:#1c3854;color:#d6ebff;font-weight:700;cursor:pointer;flex-shrink:0;">AI +</button>
-            <button id="langToggle" title="언어 전환 (한/영)" aria-label="언어 전환" type="button">한/영</button>
+            <button id="langToggle" type="button" onclick="toggleLanguage()" title="언어 전환" aria-label="언어 전환">EN/한</button>
             <button id="resetBtn" class="reset-btn" title="내 기지와 모든 데이터 초기화">내 기지 초기화</button>
             <button id="aiRemoveZone" type="button" style="display:none;padding:8px 12px;border-radius:8px;border:1px solid #b77a7a;background:#4a2323;color:#ffd9d9;font-weight:700;cursor:pointer;flex-shrink:0;">AI -</button>
             <button id="logoutBtn" class="logout-btn">로그아웃</button>
@@ -161,7 +162,9 @@
         <div id="bottomPanel">
             <!-- Portrait area (left) -->
             <div id="unitPortrait">
-                <div id="portraitPlaceholder"></div>
+                <div id="portraitPlaceholder">
+                    <img id="portraitImage" alt="" />
+                </div>
             </div>
             <!-- Stats area (center-left) -->
             <div id="unitStats">
@@ -184,6 +187,9 @@
                         <div style="background:rgba(255,255,255,0.1);border-radius:3px;height:10px;overflow:hidden;">
                             <div id="productionFillInline" style="background:linear-gradient(90deg,#7e8892,#c8d0d6);height:100%;width:0%;transition:width 0.3s;border-radius:3px;"></div>
                         </div>
+                    </div>
+                    <div id="productionQueueActions" class="production-queue-actions" style="display:none;">
+                        <button id="cancelProductionBtn" class="queue-cancel-btn" type="button"></button>
                     </div>
                     <div id="productionButtons" class="production-button-list"></div>
                 </div>
@@ -268,31 +274,22 @@
 
     <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.3.2/dist/pixi.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
-    <script src="game.js?v=pixelify_en_v1"></script>
     <script>
-        (function(){
-            const btn = document.getElementById('langToggle');
-            if (!btn) return;
-            function setLang(lang){
-                try { document.documentElement.lang = lang; localStorage.setItem('mw_lang', lang); } catch(e){}
-                updateBtn();
-            }
-            function updateBtn(){
-                if (document.documentElement.lang === 'ko') {
-                    btn.textContent = '한/영';
-                    btn.title = '언어: 한국어 (클릭해 영어로 전환)';
-                } else {
-                    btn.textContent = 'EN/한';
-                    btn.title = 'Language: English (click to switch to Korean)';
-                }
-            }
-            btn.addEventListener('click', ()=>{
-                setLang(document.documentElement.lang === 'ko' ? 'en' : 'ko');
-            });
-            const saved = localStorage.getItem('mw_lang');
-            if (saved) setLang(saved);
-            else updateBtn();
-        })();
+    /* Inline language-toggle bootstrap — works even if game.js is cached */
+    function toggleLanguage() {
+        var next = document.documentElement.lang === 'ko' ? 'en' : 'ko';
+        try { localStorage.setItem('mw_lang', next); } catch(e){}
+        if (window.applyLanguage) {
+            window.applyLanguage(next);
+        } else {
+            document.documentElement.lang = next;
+            var btn = document.getElementById('langToggle');
+            if (btn) btn.textContent = (next === 'ko') ? 'EN/한' : '한/EN';
+        }
+    }
+    window.toggleLanguage = toggleLanguage;
     </script>
+    <script src="game.js?v=lang_fix_v4"></script>
+
 </body>
 </html>

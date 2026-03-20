@@ -240,6 +240,8 @@ let cruiserAegisImageLoaded = false;
 // Destroyer image
 let destroyerImage = null;
 let destroyerImageLoaded = false;
+let nukeLeoDestroyerImage = null;
+let nukeLeoDestroyerImageLoaded = false;
 
 // Airstrike image
 let airstrikeImage = null;
@@ -360,10 +362,25 @@ const UNIT_TYPE_LABELS = Object.freeze({
     missile_launcher: Object.freeze({ ko: '미사일 발사차량', en: 'Missile Launcher' }),
     frigate: Object.freeze({ ko: '호위함', en: 'Frigate' })
 });
+const UNIT_PORTRAIT_IMAGES = Object.freeze({
+    worker: '/assets/images/units/workerprofile.png',
+    destroyer: '/assets/images/units/destroyerprofile.png',
+    cruiser: '/assets/images/units/cruiserprofile.png',
+    battleship: '/assets/images/units/battleshipprofile.png',
+    carrier: '/assets/images/units/carrierprofile.png',
+    assaultship: '/assets/images/units/assaultshipprofile.png',
+    submarine: '/assets/images/units/submarineprofile.png',
+    missile_launcher: '/assets/images/units/launcherprofile.png',
+    frigate: '/assets/images/units/frigateprofile.png'
+});
+const F127_ENTITY_NAME = 'f127';
+const NUKE_LEO_ENTITY_NAME = 'nuke-leo';
+const F127_FRIGATE_PORTRAIT_IMAGE = '/assets/images/units/cherrycherrylady.png';
+const NUKE_LEO_DESTROYER_PORTRAIT_IMAGE = '/assets/images/units/nctid.png';
 const BUILDING_TYPE_LABELS = Object.freeze({
     headquarters: Object.freeze({ ko: '본부', en: 'Headquarters' }),
     shipyard: Object.freeze({ ko: '조선소', en: 'Shipyard' }),
-    naval_academy: Object.freeze({ ko: '해군 사관학교', en: 'Advanced Shipyard' }),
+    naval_academy: Object.freeze({ ko: '대형조선소', en: 'Large Shipyard' }),
     carbase: Object.freeze({ ko: '차량 기지', en: 'Vehicle Bay' }),
     power_plant: Object.freeze({ ko: '발전소', en: 'Power Plant' }),
     missile_silo: Object.freeze({ ko: '미사일 사일로', en: 'Missile Silo' }),
@@ -378,7 +395,7 @@ const WORKER_BUILD_ITEM_TEXT = Object.freeze({
     power_plant: Object.freeze({ ko: { name: '발전소', desc: '인구 +3' }, en: { name: 'Power Plant', desc: 'Population +3' } }),
     shipyard: Object.freeze({ ko: { name: '조선소', desc: '인구 +5' }, en: { name: 'Shipyard', desc: 'Population +5' } }),
     defense_tower: Object.freeze({ ko: { name: '방어 타워', desc: '' }, en: { name: 'Defense Tower', desc: '' } }),
-    naval_academy: Object.freeze({ ko: { name: '해군 사관학교', desc: '인구 +10' }, en: { name: 'Advanced Shipyard', desc: 'Population +10' } }),
+    naval_academy: Object.freeze({ ko: { name: '대형조선소', desc: '인구 +10' }, en: { name: 'Large Shipyard', desc: 'Population +10' } }),
     missile_silo: Object.freeze({ ko: { name: '미사일 사일로', desc: '' }, en: { name: 'Missile Silo', desc: '' } }),
     carbase: Object.freeze({ ko: { name: '차량 기지', desc: '핵심 건물 각각 2개 필요' }, en: { name: 'Vehicle Bay', desc: 'Requires two of every core structure' } })
 });
@@ -423,7 +440,7 @@ const WORKER_BUILD_CATEGORIES = Object.freeze({
         label: 'Advanced Structures',
         items: Object.freeze([
             { type: 'defense_tower', name: 'Defense Tower', cost: 250, desc: '' },
-            { type: 'naval_academy', name: 'Advanced Shipyard', cost: 300, desc: 'Population +10' },
+            { type: 'naval_academy', name: 'Large Shipyard', cost: 300, desc: 'Population +10' },
             { type: 'missile_silo', name: 'Missile Silo', cost: 1600, desc: '' },
             { type: 'carbase', name: 'Vehicle Bay', cost: CARBASE_BUILD_COST, desc: 'Requires two of every core structure' }
         ])
@@ -665,6 +682,20 @@ function loadDestroyerImage() {
     }
 }
 
+function loadNukeLeoDestroyerImage() {
+    if (!nukeLeoDestroyerImage) {
+        nukeLeoDestroyerImage = new Image();
+        nukeLeoDestroyerImage.onload = () => {
+            nukeLeoDestroyerImageLoaded = true;
+            console.log('Nuke-leo destroyer image loaded');
+        };
+        nukeLeoDestroyerImage.onerror = () => {
+            console.warn('Failed to load nctide.png');
+        };
+        nukeLeoDestroyerImage.src = '/assets/images/units/nctide.png';
+    }
+}
+
 function loadAirstrikeImage() {
     if (!airstrikeImage) {
         airstrikeImage = new Image();
@@ -691,6 +722,7 @@ loadReconAircraftImage();
 loadMissileLauncherImages();
 loadCruiserAegisImage();
 loadDestroyerImage();
+loadNukeLeoDestroyerImage();
 loadAirstrikeImage();
 
 // Load building images
@@ -924,6 +956,30 @@ function canUserIdUseYamatoBattleshipSkin(userId) {
     return player.username === 'JsonParc';
 }
 
+function canUserIdUseF127FrigateSkin(userId) {
+    if (userId == null) return false;
+    const player = gameState.players.get(userId);
+    if (!player) {
+        return userId === gameState.userId && gameState.username === 'cherry';
+    }
+    if (typeof player.f127FrigateSkinEligible === 'boolean') {
+        return player.f127FrigateSkinEligible;
+    }
+    return player.username === 'cherry';
+}
+
+function canUserIdUseNukeLeoDestroyerSkin(userId) {
+    if (userId == null) return false;
+    const player = gameState.players.get(userId);
+    if (!player) {
+        return userId === gameState.userId && gameState.username === 'Nucleotide';
+    }
+    if (typeof player.nukeLeoDestroyerSkinEligible === 'boolean') {
+        return player.nukeLeoDestroyerSkinEligible;
+    }
+    return player.username === 'Nucleotide';
+}
+
 function getBattleshipSkinVariant(unit) {
     if (!unit || unit.type !== 'battleship') return 'default';
     if (unit.battleshipSkinVariant === 'yamato' || unit.battleshipSkinVariant === 'default') {
@@ -939,6 +995,40 @@ function isYamatoBattleshipUnit(unit) {
 function canToggleBattleshipSkin(unit) {
     if (!unit || unit.type !== 'battleship' || unit.userId !== gameState.userId) return false;
     return isYamatoBattleshipUnit(unit) || canUserIdUseYamatoBattleshipSkin(unit.userId);
+}
+
+function getFrigateSkinVariant(unit) {
+    if (!unit || unit.type !== 'frigate') return 'default';
+    if (unit.frigateSkinVariant === 'f127' || unit.frigateSkinVariant === 'default') {
+        return unit.frigateSkinVariant;
+    }
+    return canUserIdUseF127FrigateSkin(unit.userId) ? 'f127' : 'default';
+}
+
+function isF127FrigateUnit(unit) {
+    return !!(unit && unit.type === 'frigate' && getFrigateSkinVariant(unit) === 'f127');
+}
+
+function canToggleFrigateSkin(unit) {
+    if (!unit || unit.type !== 'frigate' || unit.userId !== gameState.userId) return false;
+    return isF127FrigateUnit(unit) || canUserIdUseF127FrigateSkin(unit.userId);
+}
+
+function getDestroyerSkinVariant(unit) {
+    if (!unit || unit.type !== 'destroyer') return 'default';
+    if (unit.destroyerSkinVariant === 'nuke-leo' || unit.destroyerSkinVariant === 'default') {
+        return unit.destroyerSkinVariant;
+    }
+    return canUserIdUseNukeLeoDestroyerSkin(unit.userId) ? 'nuke-leo' : 'default';
+}
+
+function isNukeLeoDestroyerUnit(unit) {
+    return !!(unit && unit.type === 'destroyer' && getDestroyerSkinVariant(unit) === 'nuke-leo');
+}
+
+function canToggleDestroyerSkin(unit) {
+    if (!unit || unit.type !== 'destroyer' || unit.userId !== gameState.userId) return false;
+    return isNukeLeoDestroyerUnit(unit) || canUserIdUseNukeLeoDestroyerSkin(unit.userId);
 }
 
 function getYamatoBattleshipHealthStage(unit) {
@@ -2021,7 +2111,9 @@ function getUnitImage(unitOrType) {
         case 'frigate': return frigateImageLoaded ? frigateImage : null;
         case 'aircraft': return fighterImageLoaded ? fighterImage : null;
         case 'recon_aircraft': return reconAircraftImageLoaded ? reconAircraftImage : null;
-        case 'destroyer': return destroyerImageLoaded ? destroyerImage : null;
+        case 'destroyer':
+            if (unit && isNukeLeoDestroyerUnit(unit) && nukeLeoDestroyerImageLoaded) return nukeLeoDestroyerImage;
+            return destroyerImageLoaded ? destroyerImage : null;
         case 'missile_launcher':
             if (unit && unit.deployState === 'deployed') return thaadStage2ImageLoaded ? thaadStage2Image : null;
             if (unit && unit.deployState === 'deploying_stage2') return thaadStage2ImageLoaded ? thaadStage2Image : null;
@@ -2419,6 +2511,12 @@ function getUnitTypeName(typeOrUnit) {
     if (unit && isYamatoBattleshipUnit(unit)) {
         return YAMATO_ENTITY_NAME;
     }
+    if (unit && isF127FrigateUnit(unit)) {
+        return F127_ENTITY_NAME;
+    }
+    if (unit && isNukeLeoDestroyerUnit(unit)) {
+        return NUKE_LEO_ENTITY_NAME;
+    }
     return getLocalizedLabel(UNIT_TYPE_LABELS, type);
 }
 
@@ -2431,12 +2529,56 @@ function getUnitSelectionGroupName(type, units = []) {
     ) {
         return YAMATO_ENTITY_NAME;
     }
+    if (
+        type === 'frigate'
+        && Array.isArray(units)
+        && units.length > 0
+        && units.every(unit => isF127FrigateUnit(unit))
+    ) {
+        return F127_ENTITY_NAME;
+    }
+    if (
+        type === 'destroyer'
+        && Array.isArray(units)
+        && units.length > 0
+        && units.every(unit => isNukeLeoDestroyerUnit(unit))
+    ) {
+        return NUKE_LEO_ENTITY_NAME;
+    }
     return getUnitTypeName(type);
+}
+
+function getUnitPortraitImage(unitOrType) {
+    const unit = (unitOrType && typeof unitOrType === 'object') ? unitOrType : null;
+    const unitType = unit ? unit.type : unitOrType;
+    if (unit && isF127FrigateUnit(unit)) return F127_FRIGATE_PORTRAIT_IMAGE;
+    if (unit && isNukeLeoDestroyerUnit(unit)) return NUKE_LEO_DESTROYER_PORTRAIT_IMAGE;
+    return unitType ? UNIT_PORTRAIT_IMAGES[unitType] || '' : '';
 }
 
 // Helper: get localized name for building type
 function getBuildingTypeName(type) {
     return getLocalizedLabel(BUILDING_TYPE_LABELS, type);
+}
+
+function setPortraitImageForUnit(unitOrType) {
+    const portraitFrame = document.getElementById('portraitPlaceholder');
+    const portraitImage = document.getElementById('portraitImage');
+    if (!portraitFrame || !portraitImage) return;
+
+    const portraitSrc = getUnitPortraitImage(unitOrType);
+    if (portraitSrc) {
+        if (portraitImage.getAttribute('src') !== portraitSrc) {
+            portraitImage.setAttribute('src', portraitSrc);
+        }
+        portraitImage.alt = getUnitTypeName(unitOrType);
+        portraitFrame.classList.add('has-image');
+        return;
+    }
+
+    portraitImage.removeAttribute('src');
+    portraitImage.alt = '';
+    portraitFrame.classList.remove('has-image');
 }
 
 async function downloadLandCells() {
@@ -3450,43 +3592,101 @@ function clearTargetLabelInteraction() {
     if (!targetLabel) return;
     targetLabel.dataset.skinToggleUnitId = '';
     targetLabel.dataset.skinToggleVariant = '';
+    targetLabel.dataset.skinToggleType = '';
     targetLabel.style.cursor = '';
     targetLabel.style.textDecoration = '';
     targetLabel.style.textDecorationStyle = '';
     targetLabel.title = '';
 }
 
-function setTargetLabelBattleshipSkinInteraction(unit) {
+function setTargetLabelSkinInteraction(unit) {
     clearTargetLabelInteraction();
-    if (!canToggleBattleshipSkin(unit)) return;
     const targetLabel = document.getElementById('targetLabel');
     if (!targetLabel) return;
-    const nextVariant = isYamatoBattleshipUnit(unit) ? 'default' : 'yamato';
+
+    let nextVariant = '';
+    let title = '';
+    if (canToggleBattleshipSkin(unit)) {
+        nextVariant = isYamatoBattleshipUnit(unit) ? 'default' : 'yamato';
+        title = nextVariant === 'yamato'
+            ? 'Click to apply the Yamato skin'
+            : 'Click to apply the default battleship skin';
+    } else if (canToggleFrigateSkin(unit)) {
+        nextVariant = isF127FrigateUnit(unit) ? 'default' : 'f127';
+        title = nextVariant === 'f127'
+            ? 'Click to apply the f127 skin'
+            : 'Click to restore the default frigate';
+    } else if (canToggleDestroyerSkin(unit)) {
+        nextVariant = isNukeLeoDestroyerUnit(unit) ? 'default' : 'nuke-leo';
+        title = nextVariant === 'nuke-leo'
+            ? 'Click to apply the nuke-leo skin'
+            : 'Click to restore the default destroyer';
+    } else {
+        return;
+    }
+
     targetLabel.dataset.skinToggleUnitId = String(unit.id);
+    targetLabel.dataset.skinToggleType = unit.type;
     targetLabel.dataset.skinToggleVariant = nextVariant;
     targetLabel.style.cursor = 'pointer';
     targetLabel.style.textDecoration = 'underline';
     targetLabel.style.textDecorationStyle = 'dotted';
-    targetLabel.title = nextVariant === 'yamato'
-        ? 'Click to apply the Yamato skin'
-        : 'Click to apply the default battleship skin';
+    targetLabel.title = title;
 }
 
 function handleTargetLabelClick(event) {
     const targetLabel = event?.currentTarget;
     const unitId = Number(targetLabel?.dataset?.skinToggleUnitId);
+    const unitType = targetLabel?.dataset?.skinToggleType;
     const nextVariant = targetLabel?.dataset?.skinToggleVariant;
     if (!socket || !Number.isFinite(unitId) || !nextVariant) return;
     const unit = gameState.units.get(unitId);
-    if (!canToggleBattleshipSkin(unit)) {
+
+    if (!unit || unit.type !== unitType) {
         clearTargetLabelInteraction();
         return;
     }
-    if (nextVariant === 'yamato' && !canUserIdUseYamatoBattleshipSkin(unit.userId)) return;
-    socket.emit('setBattleshipSkinVariant', {
-        unitId,
-        skinVariant: nextVariant
-    });
+
+    if (unit.type === 'battleship') {
+        if (!canToggleBattleshipSkin(unit)) {
+            clearTargetLabelInteraction();
+            return;
+        }
+        if (nextVariant === 'yamato' && !canUserIdUseYamatoBattleshipSkin(unit.userId)) return;
+        socket.emit('setBattleshipSkinVariant', {
+            unitId,
+            skinVariant: nextVariant
+        });
+        return;
+    }
+
+    if (unit.type === 'frigate') {
+        if (!canToggleFrigateSkin(unit)) {
+            clearTargetLabelInteraction();
+            return;
+        }
+        if (nextVariant === 'f127' && !canUserIdUseF127FrigateSkin(unit.userId)) return;
+        socket.emit('setFrigateSkinVariant', {
+            unitId,
+            skinVariant: nextVariant
+        });
+        return;
+    }
+
+    if (unit.type === 'destroyer') {
+        if (!canToggleDestroyerSkin(unit)) {
+            clearTargetLabelInteraction();
+            return;
+        }
+        if (nextVariant === 'nuke-leo' && !canUserIdUseNukeLeoDestroyerSkin(unit.userId)) return;
+        socket.emit('setDestroyerSkinVariant', {
+            unitId,
+            skinVariant: nextVariant
+        });
+        return;
+    }
+
+    clearTargetLabelInteraction();
 }
 
 function selectUnits() {
@@ -3612,6 +3812,7 @@ function selectUnits() {
 function renderSingleUnitPanel(unit, options = {}) {
     const { allowSkills = true, showAttackTarget = true } = options;
     clearTargetLabelInteraction();
+    setPortraitImageForUnit(unit);
 
     let displayDamage = unit.damage || 0;
     if (unit.type === 'carrier') {
@@ -3660,7 +3861,7 @@ function renderSingleUnitPanel(unit, options = {}) {
                 ? uiText(` | 탑재 ${getAssaultShipLoadedUnitCount(unit)}/${ASSAULT_SHIP_MAX_LAUNCHERS}`, ` | Loaded ${getAssaultShipLoadedUnitCount(unit)}/${ASSAULT_SHIP_MAX_LAUNCHERS}`)
                 : '');
         document.getElementById('targetLabel').textContent = `${getUnitTypeName(unit)}${factionSuffix}${stateSuffix}${holdSuffix}`;
-        setTargetLabelBattleshipSkinInteraction(unit);
+        setTargetLabelSkinInteraction(unit);
     }
 
     if (!allowSkills || unit.userId !== gameState.userId) return;
@@ -4235,6 +4436,7 @@ function updateSelectionInfo() {
     sanitizeSelectionState();
     const inspectedUnit = getInspectedUnit();
     clearTargetLabelInteraction();
+    setPortraitImageForUnit(null);
     
     // Hide all panels first
     if (workerBuildMenu) {
@@ -4251,8 +4453,16 @@ function updateSelectionInfo() {
         document.getElementById('skillSlot' + _si).style.display = 'none';
     }
     document.getElementById('productionQueueDisplay').style.display = 'none';
+    const productionQueueActions = document.getElementById('productionQueueActions');
+    if (productionQueueActions) productionQueueActions.style.display = 'none';
     document.getElementById('slbmProgressBar').style.display = 'none';
     document.getElementById('aircraftProgressBar').style.display = 'none';
+    const cancelProductionBtn = document.getElementById('cancelProductionBtn');
+    if (cancelProductionBtn) {
+        cancelProductionBtn.disabled = true;
+        cancelProductionBtn.removeAttribute('data-building');
+        cancelProductionBtn._buildingId = undefined;
+    }
     
     const btnContainer = document.getElementById('productionButtons');
     
@@ -4358,6 +4568,21 @@ function updateSelectionInfo() {
                 const isFirst = idx === 0;
                 return `<span style="display:inline-block;width:24px;height:24px;text-align:center;line-height:24px;background:${isFirst ? QUEUE_HIGHLIGHT_BG : 'rgba(255,255,255,0.1)'};border:1px solid ${isFirst ? QUEUE_HIGHLIGHT_BORDER : '#555'};border-radius:3px;font-size:14px;" title="${getUnitTypeName(item.unitType)}">${icon}</span>`;
             }).join('');
+
+            const queueActions = document.getElementById('productionQueueActions');
+            const cancelProductionBtn = document.getElementById('cancelProductionBtn');
+            if (queueActions && cancelProductionBtn) {
+                const canCancelQueuedUnit = queue.length > 0 || !!building.producing;
+                queueActions.style.display = canCancelQueuedUnit ? 'flex' : 'none';
+                cancelProductionBtn.textContent = uiText('↩ 최신 생산 취소', '↩ Cancel Last');
+                cancelProductionBtn.title = uiText(
+                    '생산 큐의 마지막 항목을 취소하고 자원과 인구를 돌려받습니다',
+                    'Cancel the most recently queued unit and refund its resources and population'
+                );
+                cancelProductionBtn.setAttribute('data-building', building.id);
+                cancelProductionBtn._buildingId = building.id;
+                cancelProductionBtn.disabled = !canCancelQueuedUnit;
+            }
             
             // Production progress
             const progContainer = document.getElementById('productionProgressInline');
@@ -4486,8 +4711,8 @@ function updateSelectionInfo() {
             }
             if (buildingType === 'carbase' && !canBuildCarbase()) {
                 btn.title = getCurrentLanguage() === 'en'
-                    ? 'Requires at least two Headquarters, Shipyards, Power Plants, Defense Towers, Naval Academies, and Missile Silos'
-                    : '본부, 조선소, 발전소, 방어 타워, 해군 사관학교, 미사일 사일로를 각각 2개 이상 보유해야 합니다';
+                    ? 'Requires at least two Headquarters, Shipyards, Power Plants, Defense Towers, Large Shipyards, and Missile Silos'
+                    : '본부, 조선소, 발전소, 방어 타워, 대형조선소, 미사일 사일로를 각각 2개 이상 보유해야 합니다';
             }
         });
     }
@@ -4502,6 +4727,7 @@ function updateSelectionInfo() {
         // Priority order for mixed selections: battleship > submarine > carrier > assaultship > cruiser > destroyer > frigate > missile_launcher/worker.
         const sortedUnits = [...selectedUnits].sort((a, b) => getUnitSelectionPriority(b.type) - getUnitSelectionPriority(a.type));
         const primaryUnit = sortedUnits[0];
+        setPortraitImageForUnit(primaryUnit);
         
         const totalDamage = selectedUnits.reduce((sum, u) => sum + getDisplayedUnitDamageValue(u), 0);
         const avgRange = Math.round(selectedUnits.reduce((sum, u) => sum + (u.attackRange || 0), 0) / selectedUnits.length);
@@ -7290,6 +7516,26 @@ if (productionButtons) {
     productionButtons.addEventListener('click', (event) => {
         const btn = getClosestProductionButton(event.target);
         if (!btn) return;
+        event.preventDefault();
+        event.stopPropagation();
+    });
+}
+
+const cancelProductionBtn = document.getElementById('cancelProductionBtn');
+if (cancelProductionBtn) {
+    cancelProductionBtn.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        suspendSelectionInfoRefresh(300);
+        if (cancelProductionBtn.disabled || !socket) return;
+        const buildingId = getProductionButtonBuildingId(cancelProductionBtn);
+        if (buildingId == null) return;
+        socket.emit('cancelUnitProduction', {
+            buildingId
+        });
+    });
+
+    cancelProductionBtn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
     });

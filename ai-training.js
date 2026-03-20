@@ -26,6 +26,58 @@ const RL_WEIGHT_ROUND_DECIMALS = Math.max(0, Math.min(6, Number(process.env.MW_R
 const RL_WEIGHT_PRUNE_ON_LOAD = process.env.MW_RL_PRUNE_ON_LOAD !== '0';
 const RL_WEIGHT_SAVE_PLAIN_JSON = process.env.MW_RL_SAVE_JSON === '1';
 const RL_WEIGHT_GZIP_LEVEL = Math.max(1, Math.min(9, Number(process.env.MW_RL_GZIP_LEVEL || 6)));
+const RL_WEIGHT_TARGET_MAX_STATES = (() => {
+  const value = Number(process.env.MW_RL_TARGET_MAX_STATES || 220000);
+  return Number.isFinite(value) ? Math.max(5000, Math.floor(value)) : 220000;
+})();
+const RL_WEIGHT_MIN_KEEP_VISITS = (() => {
+  const value = Number(process.env.MW_RL_MIN_KEEP_VISITS || 3);
+  return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 3;
+})();
+const RL_WEIGHT_RECENT_TOUCH_WINDOW = (() => {
+  const value = Number(process.env.MW_RL_RECENT_TOUCH_WINDOW || 60000);
+  return Number.isFinite(value) ? Math.max(1000, Math.floor(value)) : 60000;
+})();
+const RL_WEIGHT_COMPACT_SAVE_INTERVAL = (() => {
+  const value = Number(process.env.MW_RL_COMPACT_SAVE_INTERVAL || 3);
+  return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 3;
+})();
+const RL_WEIGHT_TABLE_FORMAT = 'sparse-pairs-v2';
+const RL_STATE_ENCODER_VERSION = 2;
+const RL_DIFFICULTY_RUN_PROFILES = Object.freeze({
+  hard: Object.freeze({
+    requestedEpisodeCap: 1000000,
+    recommendedEpisodes: 200000,
+    autoSaveIntervalMs: 120000,
+    targetMaxStates: RL_WEIGHT_TARGET_MAX_STATES,
+    minKeepVisits: RL_WEIGHT_MIN_KEEP_VISITS,
+    recentTouchWindow: RL_WEIGHT_RECENT_TOUCH_WINDOW,
+    compactSaveInterval: RL_WEIGHT_COMPACT_SAVE_INTERVAL,
+    soloLogInterval: 100,
+    selfPlayLogInterval: 100
+  }),
+  expert: Object.freeze({
+    requestedEpisodeCap: 2000000,
+    recommendedEpisodes: 1000000,
+    autoSaveIntervalMs: 300000,
+    targetMaxStates: Math.max(RL_WEIGHT_TARGET_MAX_STATES, 320000),
+    minKeepVisits: Math.max(RL_WEIGHT_MIN_KEEP_VISITS, 4),
+    recentTouchWindow: Math.max(RL_WEIGHT_RECENT_TOUCH_WINDOW, 120000),
+    compactSaveInterval: Math.max(RL_WEIGHT_COMPACT_SAVE_INTERVAL, 6),
+    soloLogInterval: 1000,
+    selfPlayLogInterval: 500
+  })
+});
+function getDifficultyRunProfile(difficulty) {
+  return RL_DIFFICULTY_RUN_PROFILES[difficulty] || RL_DIFFICULTY_RUN_PROFILES.hard;
+}
+function getAdaptiveLogInterval(episodes, baseInterval) {
+  const totalEpisodes = Math.max(0, Math.floor(Number(episodes) || 0));
+  if (totalEpisodes >= 1000000) return Math.max(baseInterval, 1000);
+  if (totalEpisodes >= 500000) return Math.max(baseInterval, 500);
+  if (totalEpisodes >= 100000) return Math.max(baseInterval, 200);
+  return Math.max(50, baseInterval);
+}
 const RL_TRAINING_MIN_RECORD_SCORE = (() => {
   const value = Number(process.env.MW_RL_MIN_RECORD_SCORE || 500);
   return Number.isFinite(value) ? Math.max(0, value) : 500;
@@ -53,7 +105,7 @@ const RL_EVENT_AIRCRAFT_REWARD_PER = Math.max(0, Number(process.env.MW_RL_EVENT_
 // Tunable weights (safe defaults)
 const RL_BUILDING_WEIGHT = Math.max(0, Number(process.env.MW_RL_BUILDING_WEIGHT || 16));
 const RL_TECH_WEIGHT = Math.max(0, Number(process.env.MW_RL_TECH_WEIGHT || 12));
-const RL_IDLE_BUILDING_PENALTY = Math.max(0, Number(process.env.MW_RL_IDLE_BUILDING_PENALTY || 12));
+const RL_IDLE_BUILDING_PENALTY = Math.max(0, Number(process.env.MW_RL_IDLE_BUILDING_PENALTY || 20));
 const RL_ENABLE_USAGE_WEIGHT = process.env.MW_RL_ENABLE_USAGE_WEIGHT !== '0';
 
 // Production bias multipliers to adjust preference for different ship classes
@@ -667,7 +719,7 @@ function getQueuedProductionReward(state, itemType) {
   // Optionally scale completion rewards by recent utilization (keeps completion reward tied to usefulness)
   try {
     if (RL_ENABLE_USAGE_WEIGHT && typeof computeUtilReward === 'function') {
-      const utilNorm = Math.min(1, computeUtilReward(state) / 20);
+      const utilNorm = Math.max(0, Math.min(1, computeUtilReward(state) / 20));
       const mult = 0.75 + 0.5 * utilNorm; // range ~0.75..1.25
       reward *= mult;
     }
@@ -721,7 +773,7 @@ function getCompletedBuildingReward(state, buildingType, baseReward) {
   }
   try {
     if (RL_ENABLE_USAGE_WEIGHT && typeof computeUtilReward === 'function') {
-      const utilNorm = Math.min(1, computeUtilReward(state) / 20);
+      const utilNorm = Math.max(0, Math.min(1, computeUtilReward(state) / 20));
       const mult = 0.75 + 0.5 * utilNorm;
       reward *= mult;
     }
@@ -790,6 +842,120 @@ function getCompletedProductionReward(state, itemType, baseReward) {
   return reward;
 }
 
+function getBuildingUtilizationSignals(source) {
+  if (!source || typeof source !== 'object') {
+    return {
+      activeScore: 0,
+      idleScore: 0,
+      towerKillBonus: 0,
+      utilizationRatio: 0
+    };
+  }
+
+  const clamp01 = (v) => Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
+  const ownCombatPower = Math.max(0, Number(source?.combatPower || 0));
+  const enemyCombatPower = Math.max(0, Number(source?.enemyCombatPower || 0));
+  const enemyBuildingCount = Math.max(0, Math.floor(source?.enemyBuildingCount || 0));
+
+  const powerPlantCount = getBuildingCountFromSource(source, 'power_plant');
+  const shipyardCount = getBuildingCountFromSource(source, 'shipyard');
+  const missileSiloCount = getBuildingCountFromSource(source, 'missile_silo');
+  const carbaseCount = getBuildingCountFromSource(source, 'carbase');
+  const defenseTowerCount = getBuildingCountFromSource(source, 'defense_tower');
+
+  const energyIncome = Math.max(
+    0,
+    Number.isFinite(Number(source?.energyIncomePerSec))
+      ? Number(source.energyIncomePerSec)
+      : getSimulationEnergyIncomePerSecond(source)
+  );
+  const energySpend = Math.max(
+    0,
+    Number.isFinite(Number(source?.energySpendPerSec))
+      ? Number(source.energySpendPerSec)
+      : getSimulationEnergySpendPerSecond(source)
+  );
+
+  const spendUtil = energyIncome > 0 ? clamp01(energySpend / Math.max(1, energyIncome)) : (energySpend > 0 ? 0 : 1);
+  const throughput = Math.sqrt(Math.max(0, energyIncome * energySpend));
+
+  const combatPopulation = getCombatPopulation(source);
+  const shipyardLoad = Math.max(0, Math.floor(getSimulationProducerLoad(source, 'shipyard') || 0));
+  const shipyardDemand = combatPopulation + (shipyardLoad * 2) + (enemyCombatPower > Math.max(220, ownCombatPower * 0.78) ? 3 : 0);
+
+  const storedSlbmCount = Math.max(0, Math.floor(source?.storedSlbmCount || 0));
+  const loadedSlbmCount = Math.max(0, Math.floor(source?.loadedSlbmCount || 0));
+  const slbmFiredCount = Math.max(0, Math.floor(source?.slbmFiredCount || 0));
+  const slbmOpportunity = getSoloSlbmStrikeOpportunity(source);
+  const launcherCount = Math.max(0, Math.floor(source?.launcherCount || 0));
+  const deployedLauncherCount = Math.max(0, Math.floor(source?.deployedLauncherCount || 0));
+  const killEventScore = Math.max(0, Math.floor(source?.killEventScore || 0));
+  const towerThreatOpportunity = clamp01(
+    Math.max(0, (enemyCombatPower - (ownCombatPower * 0.72)) / 320)
+    + Math.min(0.45, enemyBuildingCount * 0.05)
+    + Math.min(0.55, Math.max(0, Number(source?.threatenedBuildingCount || 0)) * 0.12)
+  );
+
+  // Building-specific utilization proxies:
+  // - shipyard: actual fleet/queue pressure
+  // - missile silo: stock + loaded + fired missiles
+  // - carbase: launcher production/deployment activity
+  // - defense tower: threat pressure + kill conversion
+  // Core infra (power plant) should be near-exempt from idle penalties.
+  const powerPlantUtil = powerPlantCount > 0
+    ? Math.max(0.55, clamp01((throughput * (0.35 + (0.65 * spendUtil))) / Math.max(1, powerPlantCount * 9)))
+    : 1;
+  const shipyardUtil = shipyardCount > 0
+    ? clamp01(shipyardDemand / Math.max(1, shipyardCount * 8))
+    : 1;
+  // Silo has cooldown and sparse usage windows; apply opportunity-aware floor.
+  const siloUtilFloor = missileSiloCount > 0
+    ? (slbmOpportunity >= 5 ? 0.2 : slbmOpportunity >= 2 ? 0.34 : 0.5)
+    : 1;
+  const siloUtil = missileSiloCount > 0
+    ? Math.max(siloUtilFloor, clamp01((storedSlbmCount + loadedSlbmCount + (slbmFiredCount * 1.6) + Math.min(6, slbmOpportunity * 0.4)) / Math.max(1, missileSiloCount * 4)))
+    : 1;
+  const carbaseUtil = carbaseCount > 0
+    ? clamp01((launcherCount + (deployedLauncherCount * 1.6) + Math.min(6, Math.floor(killEventScore / 120)) + (enemyCombatPower > Math.max(260, ownCombatPower * 0.82) ? 2.5 : 0)) / Math.max(1, carbaseCount * 5))
+    : 1;
+  // Defense tower is reactive by nature; reward kills strongly but keep passive baseline when no invasion.
+  const towerUtilFloor = defenseTowerCount > 0
+    ? (towerThreatOpportunity >= 0.6 ? 0.2 : towerThreatOpportunity >= 0.3 ? 0.35 : 0.55)
+    : 1;
+  const towerUtil = defenseTowerCount > 0
+    ? Math.max(
+      towerUtilFloor,
+      clamp01((Math.max(0, (enemyCombatPower - (ownCombatPower * 0.68)) / 180) + Math.max(0, Math.floor(killEventScore / 70))) / Math.max(1, defenseTowerCount * 2.2))
+    )
+    : 1;
+
+  const activeScore =
+    (powerPlantCount * powerPlantUtil * 2.4) +
+    (shipyardCount * shipyardUtil * 4.2) +
+    (missileSiloCount * siloUtil * 5.0) +
+    (carbaseCount * carbaseUtil * 4.6) +
+    (defenseTowerCount * towerUtil * 3.8);
+
+  const idleScore =
+    (powerPlantCount * (1 - powerPlantUtil) * 1.1) +
+    (shipyardCount * (1 - shipyardUtil) * 4.5) +
+    // Opportunity gating: low-use windows should not over-punish silo/tower ownership.
+    (missileSiloCount * (1 - siloUtil) * (2.0 + (3.2 * clamp01((slbmOpportunity - 1.2) / 5)))) +
+    (carbaseCount * (1 - carbaseUtil) * 5.0) +
+    (defenseTowerCount * (1 - towerUtil) * (1.2 + (2.2 * towerThreatOpportunity)));
+
+  const towerKillBonus = defenseTowerCount > 0
+    ? Math.min(24 * defenseTowerCount, Math.max(0, Math.floor(killEventScore / 70)) * (2.0 + (defenseTowerCount * 0.22)))
+    : 0;
+
+  return {
+    activeScore,
+    idleScore,
+    towerKillBonus,
+    utilizationRatio: clamp01(activeScore / Math.max(1, activeScore + idleScore))
+  };
+}
+
 // Compute a small, normalized utilization-based reward for naval/defense usage.
 // Returns a positive numeric bonus (unscaled); caller should scale by alpha.
 function computeUtilReward(agent) {
@@ -802,25 +968,29 @@ function computeUtilReward(agent) {
   const loadedSlbmCount = Math.max(0, Math.floor(agent.loadedSlbmCount || 0));
   const subFrac = submarineCount > 0 ? Math.min(1, loadedSlbmCount / (submarineCount * SUBMARINE_SLBM_CAPACITY)) : 0;
 
-  const towerScore = getStrategicDefenseScore(agent) || 0;
-  const towerNorm = Math.tanh(towerScore / 3); // normalize to ~(-1..1) but towerScore >=0 so ~0..1
+  const usage = getBuildingUtilizationSignals(agent);
 
-  // weights chosen to keep util bonus moderate relative to existing score magnitudes
-  const carrierWeight = 12; // max contribution ~12
-  const subWeight = 12;     // max contribution ~12
-  const towerWeight = 8;    // max contribution ~8
+  // Building utilization contributes positively when actively used, and negatively when idling.
+  const carrierWeight = 14;
+  const subWeight = 14;
+  const buildingUsageWeight = 1.45;
+  const idlePenaltyWeight = 2.1;
 
-  const util = (carrierFrac * carrierWeight) + (subFrac * subWeight) + (towerNorm * towerWeight);
-  return Math.max(0, util);
+  const util =
+    (carrierFrac * carrierWeight) +
+    (subFrac * subWeight) +
+    (usage.activeScore * buildingUsageWeight) +
+    (usage.towerKillBonus * 0.55) -
+    (usage.idleScore * idlePenaltyWeight);
+
+  return util;
 }
 
 // Conservative idle-building penalty estimator — uses building retention score to estimate useful buildings
 function getIdleBuildingPenalty(agent) {
   try {
-    const retention = getBuildingRetentionScore(agent) || 0;
-    const usefulEstimate = Math.max(0, Math.round(retention / 6));
-    const buildingCount = Math.max(0, Math.floor(agent.buildingCount || 0));
-    return Math.max(0, buildingCount - usefulEstimate);
+    const usage = getBuildingUtilizationSignals(agent);
+    return Math.max(0, usage.idleScore - (usage.activeScore * 0.25));
   } catch (err) {
     return 0;
   }
@@ -896,6 +1066,8 @@ const {
   readWeightsSource,
   writeFileAtomic,
   removeFileIfExists,
+  packWeightTable,
+  unpackWeightTable,
   pruneWeightTable,
   ensureExternalWeightsCached
 } = createWeightStorageHelpers({
@@ -931,22 +1103,22 @@ const SIM_BUILDING_DEFS = Object.freeze({
   power_plant: { cost: 150, buildTime: SIM_BUILDING_BUILD_TIME_MS, popBonus: 3, completionReward: 1, combatPower: 120 },
   shipyard: { cost: 200, buildTime: SIM_BUILDING_BUILD_TIME_MS, popBonus: 5, completionReward: 2, combatPower: 120 },
   naval_academy: { cost: 300, buildTime: SIM_BUILDING_BUILD_TIME_MS, popBonus: 10, completionReward: 2.5, combatPower: 150 },
-  missile_silo: { cost: 1600, buildTime: SIM_BUILDING_BUILD_TIME_MS, popBonus: 0, completionReward: 4.2, combatPower: 150 },
+  missile_silo: { cost: 1200, buildTime: SIM_BUILDING_BUILD_TIME_MS, popBonus: 0, completionReward: 4.2, combatPower: 150 },
   defense_tower: { cost: 250, buildTime: SIM_BUILDING_BUILD_TIME_MS, popBonus: 0, completionReward: 2.2, combatPower: 150 },
   carbase: { cost: 350, buildTime: SIM_BUILDING_BUILD_TIME_MS, popBonus: 0, completionReward: 3.2, combatPower: 150 }
 });
 
 const SIM_UNIT_DEFS = Object.freeze({
   worker: { cost: 50, pop: 1, buildTime: 3000, combatPower: 0, producer: 'headquarters', countField: 'workerCount', completionReward: 0.6 },
-  frigate: { cost: 135, pop: 1, buildTime: 6000, combatPower: COMBAT_POWER_MAP.frigate, producer: 'shipyard', countField: 'frigateCount', completionReward: 0.95 },
-  destroyer: { cost: 170, pop: 2, buildTime: 9000, combatPower: COMBAT_POWER_MAP.destroyer, producer: 'shipyard', countField: 'destroyerCount', completionReward: 1.0 },
-  cruiser: { cost: 285, pop: 3, buildTime: 14000, combatPower: COMBAT_POWER_MAP.cruiser, producer: 'shipyard', countField: 'cruiserCount', completionReward: 1.2 },
-  battleship: { cost: 2400, pop: 20, buildTime: 70000, combatPower: COMBAT_POWER_MAP.battleship, producer: 'naval_academy', countField: 'battleshipCount', completionReward: 2.8 },
-  carrier: { cost: 1600, pop: 12, buildTime: 40000, combatPower: COMBAT_POWER_MAP.carrier, producer: 'naval_academy', countField: 'carrierCount', completionReward: 2.25 },
-  assaultship: { cost: 1000, pop: 10, buildTime: 26000, combatPower: COMBAT_POWER_MAP.assaultship, producer: 'naval_academy', countField: 'assaultshipCount', completionReward: 1.8 },
-  submarine: { cost: 1800, pop: 8, buildTime: 30000, combatPower: COMBAT_POWER_MAP.submarine, producer: 'naval_academy', countField: 'submarineCount', completionReward: 2.05 },
-  missile_launcher: { cost: 2200, pop: 4, buildTime: 18000, combatPower: COMBAT_POWER_MAP.missile_launcher, producer: 'carbase', countField: 'launcherCount', completionReward: 1.35 },
-  slbm: { cost: 1500, pop: 0, buildTime: 45000, combatPower: 0, producer: 'missile_silo', countField: null, completionReward: 1.2 }
+  frigate: { cost: 200, pop: 2, buildTime: 18000, combatPower: COMBAT_POWER_MAP.frigate, producer: 'shipyard', countField: 'frigateCount', completionReward: 0.82 },
+  destroyer: { cost: 250, pop: 3, buildTime: 30000, combatPower: COMBAT_POWER_MAP.destroyer, producer: 'shipyard', countField: 'destroyerCount', completionReward: 0.95 },
+  cruiser: { cost: 420, pop: 4, buildTime: 54000, combatPower: COMBAT_POWER_MAP.cruiser, producer: 'shipyard', countField: 'cruiserCount', completionReward: 1.12 },
+  battleship: { cost: 1400, pop: 10, buildTime: 210000, combatPower: COMBAT_POWER_MAP.battleship, producer: 'naval_academy', countField: 'battleshipCount', completionReward: 2.8 },
+  carrier: { cost: 1400, pop: 12, buildTime: 120000, combatPower: COMBAT_POWER_MAP.carrier, producer: 'naval_academy', countField: 'carrierCount', completionReward: 2.25 },
+  assaultship: { cost: 800, pop: 10, buildTime: 78000, combatPower: COMBAT_POWER_MAP.assaultship, producer: 'naval_academy', countField: 'assaultshipCount', completionReward: 1.8 },
+  submarine: { cost: 1500, pop: 8, buildTime: 90000, combatPower: COMBAT_POWER_MAP.submarine, producer: 'naval_academy', countField: 'submarineCount', completionReward: 2.05 },
+  missile_launcher: { cost: 1100, pop: 4, buildTime: 27000, combatPower: COMBAT_POWER_MAP.missile_launcher, producer: 'carbase', countField: 'launcherCount', completionReward: 1.35 },
+  slbm: { cost: 650, pop: 0, buildTime: 45000, combatPower: 0, producer: 'missile_silo', countField: null, completionReward: 1.2 }
 });
 
 const SIM_PRODUCER_TYPES = Object.freeze(['headquarters', 'shipyard', 'naval_academy', 'carbase', 'missile_silo']);
@@ -1154,40 +1326,65 @@ function createSimulationState(overrides = {}) {
   return syncSimulationState(state);
 }
 
+function getProductionInfraScore(summary) {
+  return (
+    Math.max(0, Math.floor(summary?.powerPlantCount || 0)) * 1.0
+    + Math.max(0, Math.floor(summary?.shipyardCount || 0)) * 1.8
+    + Math.max(0, Math.floor(summary?.navalAcademyCount || 0)) * 3.1
+    + Math.max(0, Math.floor(summary?.siloCount || 0)) * 2.5
+    + Math.max(0, Math.floor(summary?.carbaseCount || 0)) * 2.1
+    + Math.max(0, Math.floor(summary?.defenseTowerCount || 0)) * 1.1
+  );
+}
+
+function getMissileReadinessScore(summary) {
+  return (
+    Math.max(0, Math.floor(summary?.storedSlbmCount || 0))
+    + Math.max(0, Math.floor(summary?.loadedSlbmCount || 0)) * 1.9
+    + Math.max(0, Math.floor(summary?.deployedLauncherCount || 0)) * 1.5
+    + Math.max(0, Math.floor(summary?.launcherCount || 0)) * 0.55
+  );
+}
+
+function getStrategicStageScore(summary) {
+  return (
+    getTechProgressScore(summary)
+    + Math.min(10, Math.max(0, Number(summary?.combatPower || 0)) / 420)
+    + Math.min(6, getCapitalFleetStrategicScore(summary))
+    + Math.min(4, getMissileReadinessScore(summary) * 0.35)
+  );
+}
+
 function encodeAbstractState(summary) {
-  const resourceBucket = discretize(summary.resources, [200, 500, 1000, 2000, 5000]);
-  const populationBucket = discretize(summary.population, [6, 12, 20, 35, 55, 85, 120, 180]);
+  const stageBucket = discretize(getStrategicStageScore(summary), [2, 5, 8, 12, 17, 23]);
+  const resourceBucket = discretize(summary.resources, [250, 700, 1600, 3200, 6000]);
   const freePopBucket = discretize(summary.freePopulation, [0, 4, 10, 20, 40]);
-  const populationUtilizationBucket = discretize(getPopulationUtilization(summary), [0.15, 0.3, 0.5, 0.7, 0.85, 0.95]);
-  const workerBucket = discretize(summary.workerCount, [2, 4, 6, 10, 16]);
-  const unitBucket = discretize(summary.unitCount, [4, 8, 15, 25, 40]);
-  const buildingBucket = discretize(summary.buildingCount, [1, 3, 6, 10, 15, 25]);
-  const combatBucket = discretize(summary.combatPower, [100, 300, 600, 1200, 2500, 5000]);
-  const enemyBucket = discretize(summary.enemyPressure, [0, 2, 5, 8, 12]);
-  const homeThreatBucket = discretize(summary.homeThreatLevel || 0, [0, 1, 2, 4, 7, 10]);
-  const defenseGapBucket = discretize(summary.homeDefenseGap || 0, [0, 1, 2, 4, 7, 10]);
-  const powerPlantBucket = discretize(summary.powerPlantCount, [0, 1, 2, 4, 6]);
-  const shipyardBucket = discretize(summary.shipyardCount, [0, 1, 2, 4]);
-  const academyBucket = discretize(summary.navalAcademyCount, [0, 1, 2, 3]);
-  const siloBucket = discretize(summary.siloCount, [0, 1, 3, 5]);
-  const carbaseBucket = discretize(summary.carbaseCount, [0, 1, 2]);
+  const populationUtilizationBucket = discretize(getPopulationUtilization(summary), [0.18, 0.38, 0.58, 0.78, 0.9]);
+  const workerBucket = discretize(summary.workerCount, [2, 4, 6, 9, 13]);
+  const economyTempoBucket = discretize(getEconomyTempoScore(summary), [0, 4, 10, 20, 35, 55]);
+  const economyBalanceBucket = discretize(
+    Math.max(-40, Math.min(40, Number(summary.energyIncomePerSec || 0) - Number(summary.energySpendPerSec || 0))),
+    [-10, -3, 3, 10, 24]
+  );
+  const productionPressureBucket = discretize(
+    Math.max(0, Number(summary.pendingBuildingCount || 0)) + (Math.max(0, Number(summary.productionLoad || 0)) * 0.8),
+    [0, 1, 3, 6, 10, 16]
+  );
+  const combatBucket = discretize(summary.combatPower, [120, 320, 750, 1500, 3200, 6000]);
+  const enemyBucket = discretize(summary.enemyPressure, [0, 2, 4, 7, 10]);
+  const homeThreatBucket = discretize(summary.homeThreatLevel || 0, [0, 1, 3, 5, 8, 11]);
+  const defenseGapBucket = discretize(summary.homeDefenseGap || 0, [0, 1, 3, 5, 8, 11]);
+  const techBucket = discretize(getTechProgressScore(summary), [1, 3, 5, 8, 12, 16]);
+  const infraBucket = discretize(getProductionInfraScore(summary), [1, 3, 5, 8, 11, 15]);
   const lightFleetBucket = discretize((summary.frigateCount || 0) + (summary.destroyerCount || 0), [0, 2, 5, 9, 14]);
-  const supportFleetBucket = discretize((summary.cruiserCount || 0) + (summary.launcherCount || 0), [0, 1, 3, 6]);
+  const supportFleetBucket = discretize((summary.cruiserCount || 0) + (summary.launcherCount || 0), [0, 1, 3, 6, 10]);
   const capitalFleetBucket = discretize(
     (summary.battleshipCount || 0) + (summary.carrierCount || 0) + (summary.assaultshipCount || 0),
-    [0, 1, 2, 4]
+    [0, 1, 3, 5, 8]
   );
-  const subBucket = discretize(summary.submarineCount, [0, 1, 3, 6]);
-  const diversityBucket = discretize(getFleetDiversityScore(summary), [1, 2, 3, 4, 6]);
-  const dominanceBucket = discretize(getFleetDominanceRatio(summary), [0.4, 0.55, 0.7, 0.85]);
-  const storedSlbmBucket = discretize(summary.storedSlbmCount, [0, 1, 3, 6]);
-  const loadedSlbmBucket = discretize(summary.loadedSlbmCount, [0, 1, 3, 6]);
-  const incomeBucket = discretize(summary.energyIncomePerSec, [0, 5, 10, 15, 25, 40]);
-  const spendBucket = discretize(summary.energySpendPerSec, [0, 5, 10, 15, 25, 40]);
-  const pendingBucket = discretize(summary.pendingBuildingCount, [0, 1, 3, 6]);
-  const queueBucket = discretize(summary.productionLoad, [0, 1, 4, 10, 20]);
-  const deployedBucket = discretize(summary.deployedLauncherCount, [0, 1, 3, 6]);
-  return `${resourceBucket}-${populationBucket}-${freePopBucket}-${populationUtilizationBucket}-${workerBucket}-${unitBucket}-${buildingBucket}-${combatBucket}-${enemyBucket}-${homeThreatBucket}-${defenseGapBucket}-${powerPlantBucket}-${shipyardBucket}-${academyBucket}-${siloBucket}-${carbaseBucket}-${lightFleetBucket}-${supportFleetBucket}-${capitalFleetBucket}-${subBucket}-${diversityBucket}-${dominanceBucket}-${storedSlbmBucket}-${loadedSlbmBucket}-${incomeBucket}-${spendBucket}-${pendingBucket}-${queueBucket}-${deployedBucket}`;
+  const subBucket = discretize(summary.submarineCount, [0, 1, 3, 5, 8]);
+  const missileReadinessBucket = discretize(getMissileReadinessScore(summary), [0, 1, 3, 6, 10, 15]);
+  return `${RL_STATE_ENCODER_VERSION}-${stageBucket}-${resourceBucket}-${freePopBucket}-${populationUtilizationBucket}-${workerBucket}-${economyTempoBucket}-${economyBalanceBucket}-${productionPressureBucket}-${combatBucket}-${enemyBucket}-${homeThreatBucket}-${defenseGapBucket}-${techBucket}-${infraBucket}-${lightFleetBucket}-${supportFleetBucket}-${capitalFleetBucket}-${subBucket}-${missileReadinessBucket}`;
 }
 
 function getPopulationUsage(source) {
@@ -1235,7 +1432,14 @@ function getRaidFailurePenalty({
 function getEconomyTempoScore(source) {
   const energyIncomePerSec = Math.max(0, Number(source?.energyIncomePerSec || 0));
   const energySpendPerSec = Math.max(0, Number(source?.energySpendPerSec || 0));
-  return Math.min(energyIncomePerSec + SIM_BASE_PASSIVE_INCOME, energySpendPerSec);
+  if (energyIncomePerSec <= 0 || energySpendPerSec <= 0) return 0;
+  const utilization = Math.max(
+    0,
+    Math.min(1, Math.min(energyIncomePerSec, energySpendPerSec) / Math.max(1, Math.max(energyIncomePerSec, energySpendPerSec)))
+  );
+  const throughput = Math.sqrt(energyIncomePerSec * energySpendPerSec);
+  const imbalancePenalty = Math.min(throughput * 0.45, Math.abs(energyIncomePerSec - energySpendPerSec) * 0.22);
+  return Math.max(0, (throughput * (0.45 + (0.55 * utilization))) - imbalancePenalty);
 }
 
 function getLiveBuildingEnergySpendPerSecond(buildingType) {
@@ -1772,7 +1976,9 @@ function destroyRandomCompletedBuilding(state) {
 
 class QTable {
   constructor() {
-    this.table = {};   // { stateKey: [q0, q1, ..., qN] }
+    this.table = Object.create(null);   // { stateKey: Float32Array(actionCount) }
+    this.stateMeta = Object.create(null); // { stateKey: [visits, lastTouchedTick] }
+    this.stateCount = 0;
     this.learningRate = 0.1;
     this.discountFactor = 0.95;
     this.epsilon = 0.3;       // Exploration rate
@@ -1781,18 +1987,79 @@ class QTable {
     this.totalEpisodes = 0;
     this.totalReward = 0;
     this.recentRewards = [];  // Last 100 episode rewards for tracking
+    this.touchTick = 0;
+  }
+
+  reset() {
+    this.table = Object.create(null);
+    this.stateMeta = Object.create(null);
+    this.stateCount = 0;
+    this.epsilon = 0.3;
+    this.totalEpisodes = 0;
+    this.totalReward = 0;
+    this.recentRewards = [];
+    this.touchTick = 0;
+  }
+
+  recountStates() {
+    this.stateCount = Object.keys(this.table).length;
+  }
+
+  getActionRow(state) {
+    return this.table[state] || null;
+  }
+
+  _coerceActionRow(row) {
+    if (row instanceof Float32Array && row.length === ACTION_COUNT) {
+      return row;
+    }
+    const normalized = new Float32Array(ACTION_COUNT);
+    if (Array.isArray(row) || ArrayBuffer.isView(row)) {
+      for (let i = 0; i < ACTION_COUNT; i++) {
+        const value = Number(row[i]);
+        normalized[i] = Number.isFinite(value) ? value : 0;
+      }
+    }
+    return normalized;
   }
 
   ensureActionRow(state) {
-    if (!this.table[state]) {
-      this.table[state] = new Array(ACTION_COUNT).fill(0);
-    } else if (this.table[state].length < ACTION_COUNT) {
-      this.table[state].length = ACTION_COUNT;
-      for (let i = 0; i < ACTION_COUNT; i++) {
-        if (this.table[state][i] === undefined) this.table[state][i] = 0;
-      }
+    let row = this.table[state];
+    if (!row) {
+      row = new Float32Array(ACTION_COUNT);
+      this.table[state] = row;
+      this.stateCount++;
+      return row;
     }
-    return this.table[state];
+    if (!(row instanceof Float32Array) || row.length !== ACTION_COUNT) {
+      row = this._coerceActionRow(row);
+      this.table[state] = row;
+    }
+    return row;
+  }
+
+  _touchState(state) {
+    this.touchTick++;
+    const entry = this.stateMeta[state];
+    if (entry) {
+      entry[0] += 1;
+      entry[1] = this.touchTick;
+      return entry;
+    }
+    const nextEntry = [1, this.touchTick];
+    this.stateMeta[state] = nextEntry;
+    return nextEntry;
+  }
+
+  getBestValue(state) {
+    const row = this.table[state];
+    if (!row) return 0;
+    let bestValue = Number(row[0]) || 0;
+    for (let i = 1; i < ACTION_COUNT; i++) {
+      const value = Number(row[i]) || 0;
+      if (value > bestValue) bestValue = value;
+    }
+    return bestValue;
   }
 
   getQ(state, action) {
@@ -1804,15 +2071,16 @@ class QTable {
   }
 
   getBestAction(state) {
-    if (!this.table[state]) {
+    const qValues = this.table[state];
+    if (!qValues) {
       return Math.floor(Math.random() * ACTION_COUNT);
     }
-    const qValues = this.ensureActionRow(state);
     let bestAction = 0;
-    let bestValue = qValues[0];
-    for (let i = 1; i < qValues.length; i++) {
-      if (qValues[i] > bestValue) {
-        bestValue = qValues[i];
+    let bestValue = Number(qValues[0]) || 0;
+    for (let i = 1; i < ACTION_COUNT; i++) {
+      const value = Number(qValues[i]) || 0;
+      if (value > bestValue) {
+        bestValue = value;
         bestAction = i;
       }
     }
@@ -1828,11 +2096,12 @@ class QTable {
   }
 
   update(state, action, reward, nextState) {
-    const currentQ = this.getQ(state, action);
-    const nextRow = this.table[nextState];
-    const bestNextQ = nextRow ? Math.max(...this.ensureActionRow(nextState)) : 0;
+    const row = this.ensureActionRow(state);
+    const currentQ = Number(row[action]) || 0;
+    const bestNextQ = this.getBestValue(nextState);
     const newQ = currentQ + this.learningRate * (reward + this.discountFactor * bestNextQ - currentQ);
-    this.setQ(state, action, newQ);
+    row[action] = newQ;
+    this._touchState(state);
   }
 
   decayEpsilon() {
@@ -1840,13 +2109,12 @@ class QTable {
   }
 
   getStats() {
-    const stateCount = Object.keys(this.table).length;
     const avgReward = this.recentRewards.length > 0
       ? this.recentRewards.reduce((a, b) => a + b, 0) / this.recentRewards.length
       : 0;
     return {
       episodes: this.totalEpisodes,
-      states: stateCount,
+      states: this.stateCount,
       epsilon: Math.round(this.epsilon * 1000) / 1000,
       avgReward: Math.round(avgReward * 10) / 10,
       totalReward: Math.round(this.totalReward * 10) / 10
@@ -2286,6 +2554,12 @@ class TrainingSession {
   constructor(difficulty) {
     this.difficulty = difficulty || 'default';
     this.qTable = new QTable();
+    this.runProfile = getDifficultyRunProfile(this.difficulty);
+    this.targetMaxStates = this.runProfile.targetMaxStates;
+    this.minKeepVisits = this.runProfile.minKeepVisits;
+    this.recentTouchWindow = this.runProfile.recentTouchWindow;
+    this.compactSaveInterval = this.runProfile.compactSaveInterval;
+    this.progressLogInterval = getAdaptiveLogInterval(this.runProfile.recommendedEpisodes, this.runProfile.soloLogInterval);
     this.loadedStateCount = 0;
     this.isTraining = false;
     this.frozen = false;         // When frozen, no weight updates (online learning or training)
@@ -2297,19 +2571,26 @@ class TrainingSession {
     this.maxStepsPerEpisode = 300;
     this.trainingLog = [];
     this.lastSaveTime = 0;
-    this.autoSaveInterval = 60000;
+    this.autoSaveInterval = this.runProfile.autoSaveIntervalMs;
+    this.saveSequence = 0;
     this.liveTransitionsSinceSave = 0;
     this.lastLoadedSource = null;
     this.lastSavedSource = null;
     this.lastPruneStats = {
       minAbsQ: RL_WEIGHT_PRUNE_MIN_ABS_Q,
+      minVisits: this.minKeepVisits,
+      recentTouchWindow: this.recentTouchWindow,
+      maxStateCount: this.targetMaxStates,
       minActionAbsQ: RL_WEIGHT_PRUNE_ACTION_MIN_ABS_Q,
       roundDecimals: RL_WEIGHT_ROUND_DECIMALS,
+      currentTouchTick: 0,
       beforeStateCount: 0,
       afterStateCount: 0,
       prunedStates: 0,
       prunedZeroStates: 0,
       prunedLowSignalStates: 0,
+      prunedLowVisitStates: 0,
+      trimmedOverflowStates: 0,
       zeroedActions: 0,
       reason: 'init'
     };
@@ -2393,12 +2674,43 @@ class TrainingSession {
     this.loadWeights();
   }
 
+  configureRunSettings(episodes, mode = 'solo') {
+    const requestedEpisodes = Math.max(
+      10,
+      Math.floor(Number.isFinite(Number(episodes)) ? Number(episodes) : this.runProfile.recommendedEpisodes)
+    );
+    this.maxEpisodes = requestedEpisodes;
+    this.autoSaveInterval = this.runProfile.autoSaveIntervalMs;
+    this.targetMaxStates = this.runProfile.targetMaxStates;
+    this.minKeepVisits = this.runProfile.minKeepVisits;
+    this.recentTouchWindow = this.runProfile.recentTouchWindow;
+    this.compactSaveInterval = this.runProfile.compactSaveInterval;
+    const baseLogInterval = mode === 'selfplay'
+      ? this.runProfile.selfPlayLogInterval
+      : this.runProfile.soloLogInterval;
+    this.progressLogInterval = getAdaptiveLogInterval(requestedEpisodes, baseLogInterval);
+    return requestedEpisodes;
+  }
+
   loadWeights() {
     try {
       const source = getAvailableWeightSources(this.difficulty)[0];
       if (source) {
         const data = readWeightsSource(source);
-        this.qTable.table = data.table || {};
+        this.qTable.table = unpackWeightTable(data.table || {}, data.tableFormat || 'dense');
+        this.qTable.stateMeta = Object.create(null);
+        for (const [stateKey, entry] of Object.entries(data.stateMeta || {})) {
+          const visits = Math.max(0, Math.floor(Number(entry?.[0] ?? entry?.visits ?? 0) || 0));
+          const lastTouched = Math.max(0, Math.floor(Number(entry?.[1] ?? entry?.lastTouched ?? 0) || 0));
+          this.qTable.stateMeta[stateKey] = [visits, lastTouched];
+        }
+        this.qTable.recountStates();
+        this.qTable.touchTick = Math.max(0, Math.floor(Number(data.touchTick || 0) || 0));
+        if (Object.keys(this.qTable.stateMeta).length === 0 && this.qTable.stateCount > 0) {
+          for (const stateKey of Object.keys(this.qTable.table)) {
+            this.qTable.stateMeta[stateKey] = [this.minKeepVisits, 0];
+          }
+        }
         this.qTable.epsilon = data.epsilon || 0.3;
         this.qTable.totalEpisodes = data.totalEpisodes || 0;
         this.qTable.totalReward = data.totalReward || 0;
@@ -2417,7 +2729,7 @@ class TrainingSession {
         if (RL_WEIGHT_PRUNE_ON_LOAD) {
           this.pruneWeights('load');
         } else {
-          this.loadedStateCount = Object.keys(this.qTable.table).length;
+          this.loadedStateCount = this.qTable.stateCount;
         }
         console.log(
           `[AI-RL][${this.difficulty}] Loaded ${source.format} weights from ${path.basename(source.path)}: ` +
@@ -2433,8 +2745,16 @@ class TrainingSession {
   }
 
   pruneWeights(reason = 'save') {
-    const result = pruneWeightTable(this.qTable.table, RL_WEIGHT_PRUNE_MIN_ABS_Q);
+    const result = pruneWeightTable(this.qTable.table, this.qTable.stateMeta, {
+      minAbsQ: RL_WEIGHT_PRUNE_MIN_ABS_Q,
+      minVisits: this.minKeepVisits,
+      recentTouchWindow: this.recentTouchWindow,
+      currentTouchTick: this.qTable.touchTick,
+      maxStateCount: this.targetMaxStates
+    });
     this.qTable.table = result.table;
+    this.qTable.stateMeta = result.stateMeta;
+    this.qTable.recountStates();
     this.loadedStateCount = result.stats.afterStateCount;
     this.lastPruneStats = {
       ...result.stats,
@@ -2508,9 +2828,33 @@ class TrainingSession {
 
   saveWeights() {
     try {
-      const pruneStats = this.pruneWeights('save');
+      this.saveSequence += 1;
+      const shouldCompact = (
+        this.qTable.stateCount > this.targetMaxStates
+        || (this.saveSequence % this.compactSaveInterval) === 0
+      );
+      const pruneStats = shouldCompact
+        ? this.pruneWeights('save')
+        : {
+            ...this.lastPruneStats,
+            beforeStateCount: this.qTable.stateCount,
+            afterStateCount: this.qTable.stateCount,
+            currentTouchTick: this.qTable.touchTick,
+            maxStateCount: this.targetMaxStates,
+            prunedStates: 0,
+            prunedZeroStates: 0,
+            prunedLowSignalStates: 0,
+            prunedLowVisitStates: 0,
+            trimmedOverflowStates: 0,
+            zeroedActions: 0,
+            reason: 'save-skip'
+          };
       const data = {
-        table: this.qTable.table,
+        formatVersion: RL_STATE_ENCODER_VERSION,
+        tableFormat: RL_WEIGHT_TABLE_FORMAT,
+        table: packWeightTable(this.qTable.table),
+        stateMeta: this.qTable.stateMeta,
+        touchTick: this.qTable.touchTick,
         epsilon: this.qTable.epsilon,
         totalEpisodes: this.qTable.totalEpisodes,
         totalReward: this.qTable.totalReward,
@@ -2520,7 +2864,8 @@ class TrainingSession {
         recordingPolicy: this.recordingPolicy,
         recordingStats: this.recordingStats,
         savedAt: new Date().toISOString(),
-        stateCount: Object.keys(this.qTable.table).length
+        stateCount: this.qTable.stateCount,
+        encoderVersion: RL_STATE_ENCODER_VERSION
       };
       const payload = JSON.stringify(data);
       const compressedPayload = zlib.gzipSync(Buffer.from(payload, 'utf8'), { level: RL_WEIGHT_GZIP_LEVEL });
@@ -2535,7 +2880,11 @@ class TrainingSession {
         file: path.basename(this.compressedWeightsPath),
         format: 'gzip',
         sizeBytes: savedStats.size,
-        mtimeMs: savedStats.mtimeMs
+        mtimeMs: savedStats.mtimeMs,
+        stateCount: data.stateCount,
+        tableFormat: RL_WEIGHT_TABLE_FORMAT,
+        encoderVersion: RL_STATE_ENCODER_VERSION,
+        prune: pruneStats
       };
       this.lastSaveTime = Date.now();
       this.liveTransitionsSinceSave = 0;
@@ -2622,7 +2971,15 @@ class TrainingSession {
         loadedFrom: this.lastLoadedSource,
         savedTo: this.lastSavedSource,
         prune: this.lastPruneStats,
-        savePlainJson: RL_WEIGHT_SAVE_PLAIN_JSON
+        savePlainJson: RL_WEIGHT_SAVE_PLAIN_JSON,
+        tuning: {
+          autoSaveIntervalMs: this.autoSaveInterval,
+          targetMaxStates: this.targetMaxStates,
+          minKeepVisits: this.minKeepVisits,
+          recentTouchWindow: this.recentTouchWindow,
+          compactSaveInterval: this.compactSaveInterval,
+          progressLogInterval: this.progressLogInterval
+        }
       },
       recording: {
         policy: { ...this.recordingPolicy },
@@ -2712,7 +3069,7 @@ class TrainingSession {
     }
     this.isTraining = true;
     this.currentTrainingMode = 'solo';
-    this.maxEpisodes = episodes || 1000;
+    this.configureRunSettings(episodes, 'solo');
     this.currentEpisode = 0;
     this.recordingStats.solo = {
       attempted: 0,
@@ -2734,6 +3091,9 @@ class TrainingSession {
       );
     }
     this.trainingLog.push(`[학습 시작] ${this.maxEpisodes} 에피소드`);
+    this.trainingLog.push(
+      `[Profile] save: ${Math.round(this.autoSaveInterval / 1000)}s, compact: every ${this.compactSaveInterval} saves, state budget: ${this.targetMaxStates}, log: every ${this.progressLogInterval}`
+    );
     console.log(`[AI-RL] Training started: ${this.maxEpisodes} episodes`);
 
     this._runTrainingStep(stepCallback);
@@ -2786,8 +3146,8 @@ class TrainingSession {
     }
     this.qTable.decayEpsilon();
 
-    // Log every 50 episodes
-    if (this.currentEpisode % 50 === 0) {
+    // Log periodically. Long expert runs should not spend excessive time in console output.
+    if (this.currentEpisode % this.progressLogInterval === 0) {
       const stats = this.qTable.getStats();
       const msg =
         `[Episode ${this.currentEpisode}/${this.maxEpisodes}] reward: ${Math.round(episodeReward)}, ` +
@@ -3870,13 +4230,15 @@ class SelfPlayArena {
     if (!this.qTable) {
       return Math.floor(Math.random() * ACTION_COUNT);
     }
-    const qValues = this.qTable.ensureActionRow(stateKey);
+    const qValues = this.qTable.getActionRow(stateKey);
     const profile = agent?.selfPlayProfile;
     const epsilonBase = Number.isFinite(this.qTable.epsilon) ? this.qTable.epsilon : 0.1;
     const minEpsilon = Number.isFinite(this.qTable.minEpsilon) ? this.qTable.minEpsilon : 0.05;
     const epsilonScale = profile?.epsilonScale || 1;
     const epsilon = Math.max(minEpsilon, Math.min(0.6, epsilonBase * epsilonScale));
-    const maxAbsQ = qValues.reduce((maxValue, value) => Math.max(maxValue, Math.abs(Number(value) || 0)), 0);
+    const maxAbsQ = qValues
+      ? qValues.reduce((maxValue, value) => Math.max(maxValue, Math.abs(Number(value) || 0)), 0)
+      : 0;
     const biasMagnitude = Math.min(6, Math.max(0.75, maxAbsQ * 0.04)) * (profile?.biasScale || 1);
 
     if (Math.random() < epsilon) {
@@ -3893,7 +4255,7 @@ class SelfPlayArena {
     let bestAction = 0;
     let bestScore = -Infinity;
     for (let i = 0; i < ACTION_COUNT; i++) {
-      const score = (qValues[i] || 0) + (this._getActionProfileBias(agent, ACTIONS[i]) * biasMagnitude);
+      const score = (qValues ? (qValues[i] || 0) : 0) + (this._getActionProfileBias(agent, ACTIONS[i]) * biasMagnitude);
       if (score > bestScore) {
         bestScore = score;
         bestAction = i;
@@ -4253,7 +4615,11 @@ class SelfPlayArena {
     const energyIncome = getSimulationEnergyIncomePerSecond(agent);
     const energySpend = getSimulationEnergySpendPerSecond(agent);
     const powerPlantCount = getCompletedBuildingCount(agent, 'power_plant');
+    const shipyardCount = getCompletedBuildingCount(agent, 'shipyard');
     const academyCount = getCompletedBuildingCount(agent, 'naval_academy');
+    const siloCount = getCompletedBuildingCount(agent, 'missile_silo');
+    const towerCount = getCompletedBuildingCount(agent, 'defense_tower');
+    const carbaseCount = getCompletedBuildingCount(agent, 'carbase');
     const buildingRetentionScore = getBuildingRetentionScore(agent);
     const defenseSetupScore = getStrategicDefenseScore(agent);
     const fleetDiversity = getFleetDiversityScore(agent);
@@ -4261,6 +4627,7 @@ class SelfPlayArena {
     const lightFleetRatio = getLightFleetRatio(agent);
     const capitalFleetScore = getCapitalFleetStrategicScore(agent);
     const heavyNavalPressure = getHeavyNavalPressureScore(agent);
+    const buildingUsage = getBuildingUtilizationSignals(agent);
     const population = getPopulationUsage(agent);
     const maxPopulation = getPopulationCapacity(agent);
     const combatPopulation = getCombatPopulation(agent);
@@ -4272,10 +4639,18 @@ class SelfPlayArena {
     score -= getIdleBuildingPenalty(agent) * RL_IDLE_BUILDING_PENALTY;
     score += buildingRetentionScore * 5;
     score += defenseSetupScore * 14;
+    score += buildingUsage.activeScore * 16;
+    score -= buildingUsage.idleScore * 28;
+    score += buildingUsage.towerKillBonus * 6;
     // tech score with tunable weight and diminishing effect
     score += Math.min(techScore, 12) * RL_TECH_WEIGHT;
-    score += energyIncome * 10;
-    score += getEconomyTempoScore({ energyIncomePerSec: energyIncome, energySpendPerSec: energySpend }) * 8;
+    const economyTempo = getEconomyTempoScore({ energyIncomePerSec: energyIncome, energySpendPerSec: energySpend });
+    const economyThroughput = Math.sqrt(Math.max(0, energyIncome * energySpend));
+    const economyUtilization = energyIncome > 0 ? Math.max(0, Math.min(1, energySpend / Math.max(1, energyIncome))) : (energySpend > 0 ? 0 : 1);
+    score += economyTempo * 12;
+    score += economyThroughput * 6;
+    score += economyUtilization * 90;
+    score -= Math.max(0, Math.abs(energyIncome - energySpend) - 2) * 7;
     score += population * 2.8;
     score += maxPopulation * 1.4;
     score += combatPopulation * 4.2;
@@ -4284,6 +4659,12 @@ class SelfPlayArena {
     score += capitalFleetScore * (academyCount > 0 && powerPlantCount >= 4 ? 26 : 10);
     if (academyCount > 0) score += Math.max(0, heavyNavalPressure - 1) * 32;
     if ((agent.maxAttackRange || 0) >= 3 && academyCount > 0 && powerPlantCount >= 4) score += 65;
+
+    // Prevent underbuilding: too little strategic infrastructure should cost score.
+    const strategicInfraCount = powerPlantCount + shipyardCount + academyCount + siloCount + towerCount + carbaseCount;
+    if (strategicInfraCount <= 2) score -= 140;
+    else if (strategicInfraCount <= 4) score -= 55;
+
     score -= Math.max(0, fleetDominance - 0.7) * 160;
     if (techScore >= 8 && academyCount > 0 && energyIncome >= 18) {
       score -= Math.max(0, lightFleetRatio - 0.52) * 240;
@@ -4310,7 +4691,7 @@ class SelfPlayArena {
         const t = Math.max(0, Math.min(1, agent.episodeStep / RL_REWARD_UTIL_ANNEAL_STEPS));
         alpha = alpha * t;
       }
-      score += Math.max(0, rawUtil) * alpha;
+      score += rawUtil * alpha;
     } catch (err) {
       // ignore util mixing errors to avoid breaking scoring
     }
@@ -4658,6 +5039,7 @@ TrainingSession.prototype.startSelfPlayTraining = function(matches, numAgents, s
   }
   this.isTraining = true;
   this.currentTrainingMode = 'selfplay';
+  this.configureRunSettings(matches, 'selfplay');
   this.selfPlayArena = new SelfPlayArena(this.difficulty, numAgents);
   this.selfPlayArena.qTable = this.qTable;
   this.selfPlayArena.minRecordScore = this.recordingPolicy.minScore;
@@ -4666,9 +5048,8 @@ TrainingSession.prototype.startSelfPlayTraining = function(matches, numAgents, s
   this.selfPlayArena.failureReplayLimit = this.recordingPolicy.failureReplayLimit;
   this.selfPlayArena.failurePenaltyScale = this.recordingPolicy.failurePenaltyScale;
   this.selfPlayArena.failureRewardThreshold = this.recordingPolicy.failureRewardThreshold;
-  this.selfPlayArena.maxMatches = matches || 1000;
+  this.selfPlayArena.maxMatches = this.maxEpisodes;
   this.selfPlayArena.isRunning = true;
-  this.maxEpisodes = matches;
   this.currentEpisode = 0;
   this.recordingStats.selfPlay = {
     attempted: 0,
@@ -4694,7 +5075,10 @@ TrainingSession.prototype.startSelfPlayTraining = function(matches, numAgents, s
     );
   }
   this.trainingLog.push(`[셀프플레이 시작] ${matches} 매치, ${numAgents}명 대전`);
-  console.log(`[AI-RL][${this.difficulty}] Self-play started: ${matches} matches, ${numAgents} agents`);
+  this.trainingLog.push(
+    `[Profile] save: ${Math.round(this.autoSaveInterval / 1000)}s, compact: every ${this.compactSaveInterval} saves, state budget: ${this.targetMaxStates}, log: every ${this.progressLogInterval}`
+  );
+  console.log(`[AI-RL][${this.difficulty}] Self-play started: ${this.maxEpisodes} matches, ${numAgents} agents`);
 
   this._runSelfPlayStep(stepCallback);
   return true;
@@ -4744,8 +5128,8 @@ TrainingSession.prototype._runSelfPlayStep = function(stepCallback) {
   }
   this.qTable.decayEpsilon();
 
-  // Log every 50 matches
-  if (this.currentEpisode % 50 === 0) {
+  // Log periodically. Long expert runs should not spend excessive time in console output.
+  if (this.currentEpisode % this.progressLogInterval === 0) {
     const qStats = this.qTable.getStats();
     const arenaStats = this.selfPlayArena.getStats();
     const recent = this.selfPlayArena.matchResults.slice(-50);
